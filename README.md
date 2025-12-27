@@ -111,6 +111,17 @@ code --install-extension llmdotinfo.ldf-vscode
 }
 ```
 
+### Multi-Root Workspace Support
+
+The extension fully supports VS Code multi-root workspaces, including:
+- Separate spec trees per workspace folder
+- Independent guardrail configurations per workspace
+- Workspace-aware lint/audit commands
+
+**Duplicate folder names:** If you have multiple workspace folders with the same name (e.g., two folders named "app"), the extension distinguishes them by their full path internally while displaying the basename in the UI.
+
+**Primary Guardrail Workspace:** Use the `LDF: Select Primary Guardrail Workspace` command to apply one workspace's guardrails.yaml configuration to all workspaces. This is useful when you want consistent guardrails across multiple projects.
+
 ## Requirements
 
 - VS Code 1.85.0 or higher

@@ -140,6 +140,11 @@
         "command": "ldf.setupLdf",
         "title": "Setup LDF (Clone & Install)",
         "category": "LDF"
+      },
+      {
+        "command": "ldf.selectPrimaryGuardrailWorkspace",
+        "title": "Select Primary Guardrail Workspace",
+        "category": "LDF"
       }
     ],
     "menus": {
@@ -212,6 +217,10 @@
         {
           "command": "ldf.setupLdf",
           "when": "workspaceFolderCount > 0"
+        },
+        {
+          "command": "ldf.selectPrimaryGuardrailWorkspace",
+          "when": "workspaceFolderCount > 1"
         }
       ]
     },
@@ -252,7 +261,7 @@
         "ldf.primaryGuardrailWorkspace": {
           "type": "string",
           "default": "",
-          "description": "In multi-root workspaces, use this workspace folder's guardrails.yaml for all workspaces. Leave empty to load guardrails per-workspace."
+          "description": "Full path to workspace folder whose guardrails.yaml should apply to all workspaces. Use 'LDF: Select Primary Guardrail Workspace' command to set this. Leave empty for per-workspace guardrails."
         },
         "ldf.outputMode": {
           "type": "string",

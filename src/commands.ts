@@ -438,6 +438,49 @@ lint:
             vscode.window.showInformationMessage(`LDF: Project initialized (framework v${frameworkVersion})`);
         })
     );
+
+    // Select primary guardrail workspace (for multi-root)
+    context.subscriptions.push(
+        vscode.commands.registerCommand('ldf.selectPrimaryGuardrailWorkspace', async () => {
+            const folders = vscode.workspace.workspaceFolders || [];
+
+            if (folders.length < 2) {
+                vscode.window.showInformationMessage('LDF: This command is only useful in multi-root workspaces.');
+                return;
+            }
+
+            // Build picker items: "None" option + all workspace folders
+            const items: Array<{ label: string; description: string; path: string }> = [
+                {
+                    label: '$(close) None',
+                    description: 'Load guardrails per-workspace (default)',
+                    path: ''
+                },
+                ...folders.map(f => ({
+                    label: f.name,
+                    description: f.uri.fsPath,
+                    path: f.uri.fsPath
+                }))
+            ];
+
+            const selected = await vscode.window.showQuickPick(items, {
+                placeHolder: 'Select workspace to use as primary guardrails source',
+                title: 'Primary Guardrail Workspace'
+            });
+
+            if (selected) {
+                const config = vscode.workspace.getConfiguration('ldf');
+                await config.update('primaryGuardrailWorkspace', selected.path, vscode.ConfigurationTarget.Workspace);
+                guardrailProvider.refresh();
+
+                if (selected.path) {
+                    vscode.window.showInformationMessage(`LDF: Using guardrails from '${selected.label}' for all workspaces`);
+                } else {
+                    vscode.window.showInformationMessage('LDF: Using per-workspace guardrails');
+                }
+            }
+        })
+    );
 }
 
 async function openSpecFile(

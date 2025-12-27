@@ -122,19 +122,19 @@ export class GuardrailTreeProvider implements vscode.TreeDataProvider<TreeItem> 
             if (this.workspacePaths.length > 1) {
                 return Promise.resolve(this.getWorkspaceFolderItems());
             }
-            // Single-root: show guardrails for the only workspace
-            const workspaceName = this.workspacePaths[0]?.name;
-            return Promise.resolve(this.getGuardrailItemsForWorkspace(workspaceName));
+            // Single-root: show guardrails for the only workspace (use full path)
+            const workspacePath = this.workspacePaths[0]?.path;
+            return Promise.resolve(this.getGuardrailItemsForWorkspace(workspacePath));
         }
 
         if (element instanceof WorkspaceFolderItem) {
-            // Workspace level: show guardrails for this workspace
-            return Promise.resolve(this.getGuardrailItemsForWorkspace(element.workspaceName));
+            // Workspace level: show guardrails for this workspace (use full path)
+            return Promise.resolve(this.getGuardrailItemsForWorkspace(element.workspacePath));
         }
 
         if (element instanceof GuardrailTreeItem && element.contextValue === 'guardrail') {
-            // Guardrail level: show covering specs
-            return Promise.resolve(this.getCoverageItems(element.guardrailId!, element.workspaceName));
+            // Guardrail level: show covering specs (use full path)
+            return Promise.resolve(this.getCoverageItems(element.guardrailId!, element.workspacePath));
         }
 
         return Promise.resolve([]);
@@ -196,7 +196,8 @@ export class GuardrailTreeProvider implements vscode.TreeDataProvider<TreeItem> 
     private loadGuardrails(): void {
         const vsConfig = vscode.workspace.getConfiguration('ldf');
         const guardrailsFileName = vsConfig.get('guardrailsFile', '.ldf/guardrails.yaml');
-        const primaryWorkspaceName = vsConfig.get<string>('primaryGuardrailWorkspace', '');
+        // Setting now stores full path (set via picker command)
+        const primaryWorkspacePath = vsConfig.get<string>('primaryGuardrailWorkspace', '');
 
         this.guardrailsPerWorkspace.clear();
         this.guardrailsFilePathPerWorkspace.clear();
@@ -207,8 +208,8 @@ export class GuardrailTreeProvider implements vscode.TreeDataProvider<TreeItem> 
         let workspacesToLoad = this.workspacePaths;
 
         // If primary workspace is set, use only that workspace's guardrails
-        if (primaryWorkspaceName) {
-            const primaryWs = this.workspacePaths.find(w => w.name === primaryWorkspaceName);
+        if (primaryWorkspacePath) {
+            const primaryWs = this.workspacePaths.find(w => w.path === primaryWorkspacePath);
             if (primaryWs) {
                 workspacesToLoad = [primaryWs];
             }
@@ -217,16 +218,18 @@ export class GuardrailTreeProvider implements vscode.TreeDataProvider<TreeItem> 
         // Load guardrails for each workspace
         for (const workspace of workspacesToLoad) {
             const { guardrails, preset } = this.loadGuardrailsForWorkspace(workspace.path, guardrailsFileName);
-            this.guardrailsPerWorkspace.set(workspace.name, guardrails);
-            this.presetsPerWorkspace.set(workspace.name, preset);
+            // Use full path as key to avoid basename collisions
+            this.guardrailsPerWorkspace.set(workspace.path, guardrails);
+            this.presetsPerWorkspace.set(workspace.path, preset);
         }
 
         // If using primary workspace, apply its guardrails to all workspaces
-        if (primaryWorkspaceName && workspacesToLoad.length === 1) {
-            const primaryGuardrails = this.guardrailsPerWorkspace.get(primaryWorkspaceName);
+        if (primaryWorkspacePath && workspacesToLoad.length === 1) {
+            const primaryWs = workspacesToLoad[0];
+            const primaryGuardrails = this.guardrailsPerWorkspace.get(primaryWs.path);
             if (primaryGuardrails) {
                 for (const workspace of this.workspacePaths) {
-                    this.guardrailsPerWorkspace.set(workspace.name, primaryGuardrails);
+                    this.guardrailsPerWorkspace.set(workspace.path, primaryGuardrails);
                 }
             }
         }
@@ -251,16 +254,16 @@ export class GuardrailTreeProvider implements vscode.TreeDataProvider<TreeItem> 
         }
 
         // Warn about conflicting guardrail configs in multi-root workspaces
-        this.checkForConflictingConfigs(primaryWorkspaceName);
+        this.checkForConflictingConfigs(primaryWorkspacePath);
     }
 
     /**
      * Check for conflicting guardrail configs across workspaces and warn user.
      * Detects both preset conflicts and ID-level conflicts (same ID with different name/severity).
      */
-    private checkForConflictingConfigs(primaryWorkspaceName: string): void {
+    private checkForConflictingConfigs(primaryWorkspacePath: string): void {
         // Only relevant for multi-root workspaces without a primary set
-        if (this.workspacePaths.length <= 1 || primaryWorkspaceName) {
+        if (this.workspacePaths.length <= 1 || primaryWorkspacePath) {
             return;
         }
 
@@ -291,19 +294,21 @@ export class GuardrailTreeProvider implements vscode.TreeDataProvider<TreeItem> 
 
         // Check 2: ID-level conflicts (same ID with different name or severity)
         const idConflicts: string[] = [];
-        const seenGuardrails = new Map<number, { name: string; severity: string; workspace: string }>();
+        const seenGuardrails = new Map<number, { name: string; severity: string; workspaceDisplay: string }>();
 
-        for (const [workspaceName, guardrails] of this.guardrailsPerWorkspace) {
+        for (const [workspacePath, guardrails] of this.guardrailsPerWorkspace) {
+            // Use basename for display in error messages
+            const workspaceDisplay = path.basename(workspacePath);
             for (const g of guardrails) {
                 const existing = seenGuardrails.get(g.id);
                 if (existing) {
                     if (existing.name !== g.name || existing.severity !== g.severity) {
                         idConflicts.push(
-                            `ID ${g.id}: '${existing.name}' (${existing.workspace}) vs '${g.name}' (${workspaceName})`
+                            `ID ${g.id}: '${existing.name}' (${existing.workspaceDisplay}) vs '${g.name}' (${workspaceDisplay})`
                         );
                     }
                 } else {
-                    seenGuardrails.set(g.id, { name: g.name, severity: g.severity, workspace: workspaceName });
+                    seenGuardrails.set(g.id, { name: g.name, severity: g.severity, workspaceDisplay });
                 }
             }
         }
@@ -338,7 +343,8 @@ export class GuardrailTreeProvider implements vscode.TreeDataProvider<TreeItem> 
         let preset: string | undefined;
 
         const guardrailsFilePath = path.join(workspacePath, guardrailsFileName);
-        this.guardrailsFilePathPerWorkspace.set(path.basename(workspacePath), guardrailsFilePath);
+        // Use full path as key to avoid basename collisions
+        this.guardrailsFilePathPerWorkspace.set(workspacePath, guardrailsFilePath);
 
         if (!fs.existsSync(guardrailsFilePath)) {
             return { guardrails, preset };
@@ -356,8 +362,9 @@ export class GuardrailTreeProvider implements vscode.TreeDataProvider<TreeItem> 
             const validationErrors = this.validateGuardrailConfig(config);
             if (validationErrors.length > 0) {
                 this.lastParseError = validationErrors.join('; ');
-                const wsName = path.basename(workspacePath);
-                this.showParseError(`Schema validation errors in ${wsName}: ${this.lastParseError}`, wsName);
+                const wsDisplay = path.basename(workspacePath);
+                // Pass full path for correct file lookup, use basename for display
+                this.showParseError(`Schema validation errors in ${wsDisplay}: ${this.lastParseError}`, workspacePath);
                 return { guardrails, preset };
             }
 
@@ -424,9 +431,10 @@ export class GuardrailTreeProvider implements vscode.TreeDataProvider<TreeItem> 
         } catch (e) {
             const errorMessage = e instanceof Error ? e.message : String(e);
             this.lastParseError = errorMessage;
-            const wsName = path.basename(workspacePath);
-            console.error(`Failed to load guardrails for ${wsName}:`, e);
-            this.showParseError(`Failed to parse guardrails.yaml in ${wsName}: ${errorMessage}`, wsName);
+            const wsDisplay = path.basename(workspacePath);
+            console.error(`Failed to load guardrails for ${wsDisplay}:`, e);
+            // Pass full path for correct file lookup, use basename for display
+            this.showParseError(`Failed to parse guardrails.yaml in ${wsDisplay}: ${errorMessage}`, workspacePath);
             return { guardrails, preset };
         }
     }
@@ -517,9 +525,9 @@ export class GuardrailTreeProvider implements vscode.TreeDataProvider<TreeItem> 
     /**
      * Show parse error to user with quick action to open the file
      * @param message Error message to display
-     * @param workspaceName Optional workspace name to open the correct guardrails.yaml
+     * @param workspacePath Full path to workspace folder to open the correct guardrails.yaml
      */
-    private showParseError(message: string, workspaceName?: string): void {
+    private showParseError(message: string, workspacePath?: string): void {
         vscode.window
             .showWarningMessage(
                 `LDF: ${message}`,
@@ -528,8 +536,8 @@ export class GuardrailTreeProvider implements vscode.TreeDataProvider<TreeItem> 
             .then((action) => {
                 if (action === 'Open guardrails.yaml') {
                     // Use workspace-specific path if available, otherwise fall back to first workspace
-                    const filePath = workspaceName
-                        ? this.guardrailsFilePathPerWorkspace.get(workspaceName)
+                    const filePath = workspacePath
+                        ? this.guardrailsFilePathPerWorkspace.get(workspacePath)
                         : this.guardrailsFilePath;
                     if (filePath) {
                         vscode.workspace.openTextDocument(filePath).then(
@@ -553,7 +561,8 @@ export class GuardrailTreeProvider implements vscode.TreeDataProvider<TreeItem> 
         const specsPath = config.get('specsDirectory', '.ldf/specs');
 
         for (const workspace of this.workspacePaths) {
-            const guardrails = this.guardrailsPerWorkspace.get(workspace.name) || [];
+            // Use full path as key for lookups
+            const guardrails = this.guardrailsPerWorkspace.get(workspace.path) || [];
 
             // Initialize coverage for this workspace's guardrails
             const workspaceCoverage: GuardrailCoverage[] = guardrails.map((g) => ({
@@ -584,7 +593,8 @@ export class GuardrailTreeProvider implements vscode.TreeDataProvider<TreeItem> 
                 cov.status = this.calculateOverallStatus(cov.specCoverage);
             }
 
-            this.coveragePerWorkspace.set(workspace.name, workspaceCoverage);
+            // Use full path as key to avoid basename collisions
+            this.coveragePerWorkspace.set(workspace.path, workspaceCoverage);
         }
 
         // Also maintain flat coverage for backward compatibility (getCoverage() method)
@@ -596,13 +606,15 @@ export class GuardrailTreeProvider implements vscode.TreeDataProvider<TreeItem> 
         }));
 
         // Aggregate coverage from all workspaces into flat view
-        for (const [workspaceName, workspaceCoverage] of this.coveragePerWorkspace) {
+        for (const [workspacePath, workspaceCoverage] of this.coveragePerWorkspace) {
             const isMultiRoot = this.workspacePaths.length > 1;
+            // Use basename for display purposes
+            const workspaceDisplay = path.basename(workspacePath);
             for (const wsCov of workspaceCoverage) {
                 const flatCov = this.coverage.find(c => c.guardrail.id === wsCov.guardrail.id);
                 if (flatCov) {
                     for (const sc of wsCov.specCoverage) {
-                        const displayName = isMultiRoot ? `${workspaceName}/${sc.specName}` : sc.specName;
+                        const displayName = isMultiRoot ? `${workspaceDisplay}/${sc.specName}` : sc.specName;
                         flatCov.specCoverage.push({ specName: displayName, status: sc.status });
                         if (sc.status === 'done') {
                             flatCov.coveredBy.push(displayName);
@@ -695,18 +707,19 @@ export class GuardrailTreeProvider implements vscode.TreeDataProvider<TreeItem> 
 
     /**
      * Get guardrail items for a specific workspace, grouped by severity
+     * @param workspacePath Full path to the workspace folder
      */
-    private getGuardrailItemsForWorkspace(workspaceName?: string): GuardrailTreeItem[] {
-        if (!workspaceName) return [];
+    private getGuardrailItemsForWorkspace(workspacePath?: string): GuardrailTreeItem[] {
+        if (!workspacePath) return [];
 
-        const workspaceCoverage = this.coveragePerWorkspace.get(workspaceName) || [];
+        const workspaceCoverage = this.coveragePerWorkspace.get(workspacePath) || [];
 
         // Group by severity
         const items: GuardrailTreeItem[] = [];
         for (const severity of ['critical', 'high', 'medium', 'low'] as const) {
             const filtered = workspaceCoverage
                 .filter((c) => c.guardrail.severity === severity && c.guardrail.enabled)
-                .map((c) => new GuardrailTreeItem(c, workspaceName));
+                .map((c) => new GuardrailTreeItem(c, workspacePath));
             items.push(...filtered);
         }
 
@@ -716,11 +729,12 @@ export class GuardrailTreeProvider implements vscode.TreeDataProvider<TreeItem> 
     /**
      * Get coverage items (specs) for a guardrail, optionally filtered by workspace
      * Shows ALL specs that reference the guardrail, with their status (not just DONE)
+     * @param workspacePath Full path to the workspace folder
      */
-    private getCoverageItems(guardrailId: number, workspaceName?: string): GuardrailTreeItem[] {
+    private getCoverageItems(guardrailId: number, workspacePath?: string): GuardrailTreeItem[] {
         // If workspace specified, use per-workspace coverage
-        if (workspaceName) {
-            const workspaceCoverage = this.coveragePerWorkspace.get(workspaceName) || [];
+        if (workspacePath) {
+            const workspaceCoverage = this.coveragePerWorkspace.get(workspacePath) || [];
             const coverage = workspaceCoverage.find((c) => c.guardrail.id === guardrailId);
             // Use specCoverage (all statuses) instead of coveredBy (DONE only)
             if (!coverage || coverage.specCoverage.length === 0) {
@@ -790,11 +804,13 @@ export class WorkspaceFolderItem extends vscode.TreeItem {
 
 export class GuardrailTreeItem extends vscode.TreeItem {
     public readonly guardrailId?: number;
-    public readonly workspaceName?: string;
+    /** Full path to workspace folder for lookups (avoids basename collisions) */
+    public readonly workspacePath?: string;
 
     constructor(
         coverage?: GuardrailCoverage,
-        workspaceName?: string,
+        /** Full path to workspace folder */
+        workspacePath?: string,
         label?: string,
         contextValue?: string
     ) {
@@ -804,7 +820,7 @@ export class GuardrailTreeItem extends vscode.TreeItem {
                 vscode.TreeItemCollapsibleState.Collapsed
             );
             this.guardrailId = coverage.guardrail.id;
-            this.workspaceName = workspaceName;
+            this.workspacePath = workspacePath;
             this.contextValue = 'guardrail';
             this.tooltip = coverage.guardrail.description;
             // Use specCoverage.length to show all specs (not just DONE)
