@@ -1,0 +1,298 @@
+{
+  "name": "ldf-vscode",
+  "displayName": "LDF - Spec-Driven Development",
+  "description": "Visual tools for LDF (LLM Development Framework) spec-driven development workflow",
+  "version": "1.0.0",
+  "publisher": "llmdotinfo",
+  "license": "MIT",
+  "icon": "images/ldf-icon.png",
+  "galleryBanner": {
+    "color": "#1e1e1e",
+    "theme": "dark"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/LLMdotInfo/ldf-vscode"
+  },
+  "bugs": {
+    "url": "https://github.com/LLMdotInfo/ldf-vscode/issues"
+  },
+  "homepage": "https://github.com/LLMdotInfo/ldf-vscode#readme",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other",
+    "Visualization",
+    "Snippets"
+  ],
+  "keywords": [
+    "ldf",
+    "spec-driven",
+    "requirements",
+    "guardrails",
+    "development-workflow",
+    "ai-assisted",
+    "llm"
+  ],
+  "activationEvents": [
+    "onView:ldf-specs",
+    "onView:ldf-guardrails",
+    "onView:ldf-tasks"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "ldf-explorer",
+          "title": "LDF Specs",
+          "icon": "$(checklist)"
+        }
+      ]
+    },
+    "views": {
+      "ldf-explorer": [
+        {
+          "id": "ldf-specs",
+          "name": "Specifications",
+          "contextualTitle": "LDF Specs"
+        },
+        {
+          "id": "ldf-guardrails",
+          "name": "Guardrail Coverage",
+          "contextualTitle": "Guardrails"
+        },
+        {
+          "id": "ldf-tasks",
+          "name": "Current Tasks",
+          "contextualTitle": "Tasks"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "ldf.refreshSpecs",
+        "title": "Refresh Specs",
+        "icon": "$(refresh)",
+        "category": "LDF"
+      },
+      {
+        "command": "ldf.createSpec",
+        "title": "Create New Spec",
+        "icon": "$(add)",
+        "category": "LDF"
+      },
+      {
+        "command": "ldf.lintSpec",
+        "title": "Lint Spec",
+        "icon": "$(checklist)",
+        "category": "LDF"
+      },
+      {
+        "command": "ldf.lintAllSpecs",
+        "title": "Lint All Specs",
+        "category": "LDF"
+      },
+      {
+        "command": "ldf.openSpec",
+        "title": "Open Spec",
+        "category": "LDF"
+      },
+      {
+        "command": "ldf.openRequirements",
+        "title": "Open Requirements",
+        "category": "LDF"
+      },
+      {
+        "command": "ldf.openDesign",
+        "title": "Open Design",
+        "category": "LDF"
+      },
+      {
+        "command": "ldf.openTasks",
+        "title": "Open Tasks",
+        "category": "LDF"
+      },
+      {
+        "command": "ldf.runAudit",
+        "title": "Run Audit",
+        "icon": "$(shield)",
+        "category": "LDF"
+      },
+      {
+        "command": "ldf.showGuardrailDetails",
+        "title": "Show Guardrail Details",
+        "category": "LDF"
+      },
+      {
+        "command": "ldf.markTaskComplete",
+        "title": "Mark Task Complete",
+        "icon": "$(check)",
+        "category": "LDF"
+      },
+      {
+        "command": "ldf.initProject",
+        "title": "Initialize LDF Project",
+        "category": "LDF"
+      },
+      {
+        "command": "ldf.setupLdf",
+        "title": "Setup LDF (Clone & Install)",
+        "category": "LDF"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "ldf.refreshSpecs",
+          "when": "view == ldf-specs",
+          "group": "navigation"
+        },
+        {
+          "command": "ldf.createSpec",
+          "when": "view == ldf-specs",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "ldf.lintSpec",
+          "when": "view == ldf-specs && viewItem == spec",
+          "group": "inline"
+        },
+        {
+          "command": "ldf.runAudit",
+          "when": "view == ldf-specs && viewItem == spec",
+          "group": "inline"
+        },
+        {
+          "command": "ldf.openRequirements",
+          "when": "view == ldf-specs && viewItem == spec"
+        },
+        {
+          "command": "ldf.openDesign",
+          "when": "view == ldf-specs && viewItem == spec"
+        },
+        {
+          "command": "ldf.openTasks",
+          "when": "view == ldf-specs && viewItem == spec"
+        },
+        {
+          "command": "ldf.markTaskComplete",
+          "when": "view == ldf-tasks && viewItem == task",
+          "group": "inline"
+        },
+        {
+          "command": "ldf.showGuardrailDetails",
+          "when": "view == ldf-guardrails && viewItem == guardrail"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "ldf.createSpec",
+          "when": "workspaceFolderCount > 0"
+        },
+        {
+          "command": "ldf.lintAllSpecs",
+          "when": "workspaceFolderCount > 0"
+        },
+        {
+          "command": "ldf.lintSpec",
+          "when": "workspaceFolderCount > 0"
+        },
+        {
+          "command": "ldf.runAudit",
+          "when": "workspaceFolderCount > 0"
+        },
+        {
+          "command": "ldf.initProject",
+          "when": "workspaceFolderCount > 0"
+        },
+        {
+          "command": "ldf.setupLdf",
+          "when": "workspaceFolderCount > 0"
+        }
+      ]
+    },
+    "snippets": [
+      {
+        "language": "markdown",
+        "path": "./snippets/spec-snippets.json"
+      }
+    ],
+    "configuration": {
+      "title": "LDF",
+      "properties": {
+        "ldf.executablePath": {
+          "type": "string",
+          "default": "ldf",
+          "description": "Path to the ldf executable (e.g., /path/to/.venv/bin/ldf)"
+        },
+        "ldf.specsDirectory": {
+          "type": "string",
+          "default": ".ldf/specs",
+          "description": "Directory containing spec files (relative to workspace root)"
+        },
+        "ldf.guardrailsFile": {
+          "type": "string",
+          "default": ".ldf/guardrails.yaml",
+          "description": "Path to guardrails configuration file"
+        },
+        "ldf.autoRefresh": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically refresh specs when files change"
+        },
+        "ldf.skipAutoDetect": {
+          "type": "boolean",
+          "default": false,
+          "description": "Skip automatic detection of ldf executable path"
+        },
+        "ldf.primaryGuardrailWorkspace": {
+          "type": "string",
+          "default": "",
+          "description": "In multi-root workspaces, use this workspace folder's guardrails.yaml for all workspaces. Leave empty to load guardrails per-workspace."
+        },
+        "ldf.outputMode": {
+          "type": "string",
+          "enum": ["terminal", "outputPanel"],
+          "default": "terminal",
+          "description": "Where to show lint/audit output: 'terminal' (default) or 'outputPanel' for captured output"
+        },
+        "ldf.showNextTask": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically mark the first pending task in each spec as 'next up'"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts",
+    "test": "node ./out/test/runTest.js",
+    "package": "vsce package",
+    "publish": "vsce publish"
+  },
+  "devDependencies": {
+    "@types/glob": "^8.1.0",
+    "@types/js-yaml": "^4.0.9",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "^2.22.0",
+    "eslint": "^8.0.0",
+    "glob": "^10.0.0",
+    "mocha": "^11.7.5",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "js-yaml": "^4.1.0"
+  }
+}

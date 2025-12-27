@@ -1,0 +1,13 @@
+node_modules/
+out/
+*.vsix
+.vscode-test/
+
+# AI coding agents (session data, not project config)
+.claude/
+.cursor/
+.aider/
+.codeium/
+.continue/
+.windsurf/
+.codestory/
