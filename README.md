@@ -98,7 +98,6 @@ code --install-extension llmdotinfo.ldf-vscode
 | `ldf.specsDirectory` | `.ldf/specs` | Directory containing spec files |
 | `ldf.guardrailsFile` | `.ldf/guardrails.yaml` | Path to guardrails configuration |
 | `ldf.autoRefresh` | `true` | Auto-refresh when files change |
-| `ldf.showInlineWarnings` | `true` | Show inline warnings for spec issues |
 
 ### Recommended Workspace Settings
 

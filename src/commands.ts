@@ -155,18 +155,33 @@ export function registerCommands(
             'ldf.lintSpec',
             async (item?: SpecTreeItem) => {
                 let specName: string | undefined;
-                // Use the item's workspace folder path if available (multi-root support)
-                const targetPath = item?.specInfo?.folderPath || workspacePath;
+                let targetPath: string;
 
                 if (item?.specInfo) {
                     specName = item.specInfo.name;
+                    // Use the item's workspace folder path (multi-root support)
+                    targetPath = item.specInfo.folderPath || workspacePath;
                 } else {
-                    // Prompt for spec name
+                    // Prompt for spec name with workspace context
                     const specs = specProvider.getSpecs();
-                    const specNames = specs.map((s) => s.name);
-                    specName = await vscode.window.showQuickPick(specNames, {
+                    const isMultiRoot = specs.some(s => s.folderName);
+
+                    // Create QuickPick items with workspace info for multi-root
+                    const quickPickItems = specs.map((s) => ({
+                        label: s.name,
+                        description: isMultiRoot ? s.folderName : undefined,
+                        spec: s
+                    }));
+
+                    const selected = await vscode.window.showQuickPick(quickPickItems, {
                         placeHolder: 'Select spec to lint',
                     });
+
+                    if (!selected) return;
+
+                    specName = selected.spec.name;
+                    // Use the selected spec's workspace path
+                    targetPath = selected.spec.folderPath || workspacePath;
                 }
 
                 if (!specName) return;
@@ -238,17 +253,33 @@ export function registerCommands(
             'ldf.runAudit',
             async (item?: SpecTreeItem) => {
                 let specName: string | undefined;
-                // Use the item's workspace folder path if available (multi-root support)
-                const targetPath = item?.specInfo?.folderPath || workspacePath;
+                let targetPath: string;
 
                 if (item?.specInfo) {
                     specName = item.specInfo.name;
+                    // Use the item's workspace folder path (multi-root support)
+                    targetPath = item.specInfo.folderPath || workspacePath;
                 } else {
+                    // Prompt for spec name with workspace context
                     const specs = specProvider.getSpecs();
-                    const specNames = specs.map((s) => s.name);
-                    specName = await vscode.window.showQuickPick(specNames, {
+                    const isMultiRoot = specs.some(s => s.folderName);
+
+                    // Create QuickPick items with workspace info for multi-root
+                    const quickPickItems = specs.map((s) => ({
+                        label: s.name,
+                        description: isMultiRoot ? s.folderName : undefined,
+                        spec: s
+                    }));
+
+                    const selected = await vscode.window.showQuickPick(quickPickItems, {
                         placeHolder: 'Select spec to audit',
                     });
+
+                    if (!selected) return;
+
+                    specName = selected.spec.name;
+                    // Use the selected spec's workspace path
+                    targetPath = selected.spec.folderPath || workspacePath;
                 }
 
                 if (!specName) return;

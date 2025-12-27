@@ -356,7 +356,8 @@ export class GuardrailTreeProvider implements vscode.TreeDataProvider<TreeItem> 
             const validationErrors = this.validateGuardrailConfig(config);
             if (validationErrors.length > 0) {
                 this.lastParseError = validationErrors.join('; ');
-                this.showParseError(`Schema validation errors in ${path.basename(workspacePath)}: ${this.lastParseError}`);
+                const wsName = path.basename(workspacePath);
+                this.showParseError(`Schema validation errors in ${wsName}: ${this.lastParseError}`, wsName);
                 return { guardrails, preset };
             }
 
@@ -423,8 +424,9 @@ export class GuardrailTreeProvider implements vscode.TreeDataProvider<TreeItem> 
         } catch (e) {
             const errorMessage = e instanceof Error ? e.message : String(e);
             this.lastParseError = errorMessage;
-            console.error(`Failed to load guardrails for ${path.basename(workspacePath)}:`, e);
-            this.showParseError(`Failed to parse guardrails.yaml in ${path.basename(workspacePath)}: ${errorMessage}`);
+            const wsName = path.basename(workspacePath);
+            console.error(`Failed to load guardrails for ${wsName}:`, e);
+            this.showParseError(`Failed to parse guardrails.yaml in ${wsName}: ${errorMessage}`, wsName);
             return { guardrails, preset };
         }
     }
@@ -514,18 +516,31 @@ export class GuardrailTreeProvider implements vscode.TreeDataProvider<TreeItem> 
 
     /**
      * Show parse error to user with quick action to open the file
+     * @param message Error message to display
+     * @param workspaceName Optional workspace name to open the correct guardrails.yaml
      */
-    private showParseError(message: string): void {
+    private showParseError(message: string, workspaceName?: string): void {
         vscode.window
             .showWarningMessage(
                 `LDF: ${message}`,
                 'Open guardrails.yaml'
             )
             .then((action) => {
-                if (action === 'Open guardrails.yaml' && this.guardrailsFilePath) {
-                    vscode.workspace.openTextDocument(this.guardrailsFilePath).then((doc) => {
-                        vscode.window.showTextDocument(doc);
-                    });
+                if (action === 'Open guardrails.yaml') {
+                    // Use workspace-specific path if available, otherwise fall back to first workspace
+                    const filePath = workspaceName
+                        ? this.guardrailsFilePathPerWorkspace.get(workspaceName)
+                        : this.guardrailsFilePath;
+                    if (filePath) {
+                        vscode.workspace.openTextDocument(filePath).then(
+                            (doc) => {
+                                vscode.window.showTextDocument(doc);
+                            },
+                            (err) => {
+                                console.error('Failed to open guardrails.yaml:', err);
+                            }
+                        );
+                    }
                 }
             });
     }
@@ -792,7 +807,8 @@ export class GuardrailTreeItem extends vscode.TreeItem {
             this.workspaceName = workspaceName;
             this.contextValue = 'guardrail';
             this.tooltip = coverage.guardrail.description;
-            this.description = `${coverage.coveredBy.length} specs`;
+            // Use specCoverage.length to show all specs (not just DONE)
+            this.description = `${coverage.specCoverage.length} specs`;
             this.iconPath = GuardrailTreeItem.getStatusIcon(coverage);
             // Pass guardrail ID explicitly in command arguments for reliable invocation
             this.command = {
