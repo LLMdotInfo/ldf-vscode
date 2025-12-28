@@ -2,7 +2,7 @@
   "name": "ldf-vscode",
   "displayName": "LDF - Spec-Driven Development",
   "description": "Visual tools for LDF (LLM Development Framework) spec-driven development workflow",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "publisher": "llmdotinfo",
   "license": "MIT",
   "icon": "images/ldf-icon.png",
@@ -47,7 +47,7 @@
         {
           "id": "ldf-explorer",
           "title": "LDF Specs",
-          "icon": "$(checklist)"
+          "icon": "images/ldf-icon.svg"
         }
       ]
     },
@@ -145,6 +145,18 @@
         "command": "ldf.selectPrimaryGuardrailWorkspace",
         "title": "Select Primary Guardrail Workspace",
         "category": "LDF"
+      },
+      {
+        "command": "ldf.switchProject",
+        "title": "Switch Project",
+        "icon": "$(folder-opened)",
+        "category": "LDF"
+      },
+      {
+        "command": "ldf.workspaceReport",
+        "title": "Workspace Report",
+        "icon": "$(output)",
+        "category": "LDF"
       }
     ],
     "menus": {
@@ -221,6 +233,14 @@
         {
           "command": "ldf.selectPrimaryGuardrailWorkspace",
           "when": "workspaceFolderCount > 1"
+        },
+        {
+          "command": "ldf.switchProject",
+          "when": "workspaceFolderCount > 0"
+        },
+        {
+          "command": "ldf.workspaceReport",
+          "when": "workspaceFolderCount > 0"
         }
       ]
     },
@@ -273,6 +293,11 @@
           "type": "boolean",
           "default": false,
           "description": "Automatically mark the first pending task in each spec as 'next up'"
+        },
+        "ldf.showCompletedTasksInline": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show completed tasks inline with pending tasks instead of in a separate collapsible section"
         }
       }
     }

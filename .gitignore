@@ -3,6 +3,9 @@ out/
 *.vsix
 .vscode-test/
 
+# OS
+.DS_Store
+
 # AI coding agents (session data, not project config)
 .claude/
 .cursor/

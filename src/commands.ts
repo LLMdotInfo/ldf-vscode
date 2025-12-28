@@ -16,6 +16,15 @@ import { SpecTreeProvider, SpecTreeItem } from './specView';
 import { GuardrailTreeProvider, GuardrailTreeItem } from './guardrailView';
 import { TaskTreeProvider, TaskTreeItem } from './taskView';
 import { isValidSpecName, VALID_AUDIT_TYPES, execFileAsync } from './utils';
+import {
+    getActiveProject,
+    setActiveProject,
+    getWorkspaceManifest,
+    getWorkspaceRoot,
+    isInWorkspace,
+    ActiveProject
+} from './extension';
+import { resolveProjects, isLdfProject } from './workspace';
 
 interface CommandContext {
     specProvider: SpecTreeProvider;
@@ -57,9 +66,13 @@ export function registerCommands(
 
             if (!specName) return;
 
+            // Use active project path if set, otherwise default workspace
+            const activeProject = getActiveProject();
+            const targetPath = activeProject ? activeProject.path : workspacePath;
+
             const config = vscode.workspace.getConfiguration('ldf');
             const specsDir = path.join(
-                workspacePath,
+                targetPath,
                 config.get('specsDirectory', '.ldf/specs')
             );
             const specPath = path.join(specsDir, specName);
@@ -481,6 +494,179 @@ lint:
             }
         })
     );
+
+    // Switch active project (workspace mode)
+    context.subscriptions.push(
+        vscode.commands.registerCommand('ldf.switchProject', async () => {
+            // Check if we're in a workspace
+            if (!isInWorkspace()) {
+                vscode.window.showInformationMessage(
+                    'LDF: Project switching requires an ldf-workspace.yaml file. ' +
+                    'Use "ldf workspace init" in the terminal to create one.'
+                );
+                return;
+            }
+
+            const manifest = getWorkspaceManifest();
+            const wsRoot = getWorkspaceRoot();
+
+            if (!manifest || !wsRoot) {
+                vscode.window.showErrorMessage('LDF: Failed to read workspace configuration');
+                return;
+            }
+
+            // Resolve all projects
+            const projects = await resolveProjects(manifest, wsRoot);
+
+            if (projects.length === 0) {
+                vscode.window.showInformationMessage('LDF: No projects found in workspace');
+                return;
+            }
+
+            const currentProject = getActiveProject();
+
+            // Build QuickPick items
+            const items = projects.map(p => {
+                const projectPath = path.resolve(wsRoot, p.path);
+                const isActive = currentProject?.path === projectPath;
+                const isInitialized = isLdfProject(projectPath);
+
+                return {
+                    label: `${isActive ? '$(check) ' : ''}${p.alias}`,
+                    description: p.path,
+                    detail: isInitialized ? 'Initialized' : 'Not initialized',
+                    project: p,
+                    projectPath: projectPath
+                };
+            });
+
+            const selected = await vscode.window.showQuickPick(items, {
+                placeHolder: 'Select project to activate',
+                title: `Switch Project (${manifest.name})`
+            });
+
+            if (!selected) return;
+
+            // Set the active project
+            const newActiveProject: ActiveProject = {
+                alias: selected.project.alias,
+                path: selected.projectPath,
+                name: selected.project.alias
+            };
+
+            setActiveProject(newActiveProject);
+
+            // Refresh tree views to reflect the change
+            specProvider.refresh();
+            guardrailProvider.refresh();
+            taskProvider.refresh();
+
+            vscode.window.showInformationMessage(`LDF: Switched to project '${selected.project.alias}'`);
+        })
+    );
+
+    // Workspace report command
+    context.subscriptions.push(
+        vscode.commands.registerCommand('ldf.workspaceReport', async () => {
+            // Check if we're in a workspace
+            if (!isInWorkspace()) {
+                vscode.window.showInformationMessage(
+                    'LDF: Workspace Report requires an ldf-workspace.yaml file. ' +
+                    'Use "ldf workspace init" in the terminal to create one.'
+                );
+                return;
+            }
+
+            const manifest = getWorkspaceManifest();
+            const wsRoot = getWorkspaceRoot();
+
+            if (!manifest || !wsRoot) {
+                vscode.window.showErrorMessage('LDF: Failed to read workspace configuration');
+                return;
+            }
+
+            // Resolve all projects
+            const projects = await resolveProjects(manifest, wsRoot);
+
+            // Create output channel for report
+            const outputChannel = getOutputChannel();
+            outputChannel.clear();
+            outputChannel.show(true);
+
+            outputChannel.appendLine('═══════════════════════════════════════════════════');
+            outputChannel.appendLine(`  LDF Workspace Report: ${manifest.name}`);
+            outputChannel.appendLine('═══════════════════════════════════════════════════');
+            outputChannel.appendLine('');
+            outputChannel.appendLine(`Workspace Root: ${wsRoot}`);
+            outputChannel.appendLine(`Schema Version: ${manifest.version}`);
+            outputChannel.appendLine(`Projects: ${projects.length}`);
+            outputChannel.appendLine('');
+
+            // Report on each project
+            outputChannel.appendLine('───────────────────────────────────────────────────');
+            outputChannel.appendLine('  Projects');
+            outputChannel.appendLine('───────────────────────────────────────────────────');
+
+            for (const project of projects) {
+                const projectPath = path.resolve(wsRoot, project.path);
+                const initialized = isLdfProject(projectPath);
+                const statusIcon = initialized ? '✓' : '○';
+                const statusText = initialized ? 'Initialized' : 'Not initialized';
+
+                outputChannel.appendLine('');
+                outputChannel.appendLine(`  ${statusIcon} ${project.alias}`);
+                outputChannel.appendLine(`    Path: ${project.path}`);
+                outputChannel.appendLine(`    Status: ${statusText}`);
+
+                // Count specs if initialized
+                if (initialized) {
+                    const specsDir = path.join(projectPath, '.ldf', 'specs');
+                    if (fs.existsSync(specsDir)) {
+                        try {
+                            const specFolders = fs.readdirSync(specsDir, { withFileTypes: true })
+                                .filter(d => d.isDirectory())
+                                .length;
+                            outputChannel.appendLine(`    Specs: ${specFolders}`);
+                        } catch {
+                            outputChannel.appendLine(`    Specs: (unable to read)`);
+                        }
+                    } else {
+                        outputChannel.appendLine(`    Specs: 0`);
+                    }
+                }
+            }
+
+            outputChannel.appendLine('');
+            outputChannel.appendLine('───────────────────────────────────────────────────');
+            outputChannel.appendLine('  Shared Resources');
+            outputChannel.appendLine('───────────────────────────────────────────────────');
+            outputChannel.appendLine('');
+
+            const sharedPath = path.join(wsRoot, manifest.shared.path);
+            const sharedExists = fs.existsSync(sharedPath);
+            outputChannel.appendLine(`  Path: ${manifest.shared.path}`);
+            outputChannel.appendLine(`  Status: ${sharedExists ? 'Found' : 'Not found'}`);
+
+            if (sharedExists) {
+                outputChannel.appendLine(`  Inherit Guardrails: ${manifest.shared.inheritGuardrails ? 'Yes' : 'No'}`);
+                outputChannel.appendLine(`  Inherit Templates: ${manifest.shared.inheritTemplates ? 'Yes' : 'No'}`);
+                outputChannel.appendLine(`  Inherit Question Packs: ${manifest.shared.inheritQuestionPacks ? 'Yes' : 'No'}`);
+                outputChannel.appendLine(`  Inherit Macros: ${manifest.shared.inheritMacros ? 'Yes' : 'No'}`);
+            }
+
+            outputChannel.appendLine('');
+            outputChannel.appendLine('═══════════════════════════════════════════════════');
+
+            // Show active project
+            const activeProject = getActiveProject();
+            if (activeProject) {
+                outputChannel.appendLine(`  Active Project: ${activeProject.alias}`);
+            } else {
+                outputChannel.appendLine('  Active Project: None (use Switch Project to select)');
+            }
+            outputChannel.appendLine('═══════════════════════════════════════════════════');
+        })
+    );
 }
 
 async function openSpecFile(
@@ -704,7 +890,11 @@ async function runCommandInTerminal(
     cwd: string,
     taskName: string
 ): Promise<void> {
-    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    // Find the workspace folder that contains the cwd path
+    const workspaceFolder = vscode.workspace.workspaceFolders?.find(
+        folder => cwd.startsWith(folder.uri.fsPath)
+    ) || vscode.workspace.workspaceFolders?.[0];
+
     if (!workspaceFolder) {
         vscode.window.showErrorMessage('No workspace folder open');
         return;

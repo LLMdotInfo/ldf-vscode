@@ -16,10 +16,131 @@ import { GuardrailTreeProvider } from './guardrailView';
 import { TaskTreeProvider } from './taskView';
 import { registerCommands } from './commands';
 import { findInPath, getVenvCandidates, getVenvExecutablePath } from './utils';
+import {
+    detectWorkspaceContext,
+    findWorkspaceRoot,
+    resolveProjects,
+    WorkspaceManifest,
+    ProjectEntry,
+    WORKSPACE_MANIFEST
+} from './workspace';
 
 let specProvider: SpecTreeProvider;
 let guardrailProvider: GuardrailTreeProvider;
 let taskProvider: TaskTreeProvider;
+
+// Status bar for active project indicator
+let projectStatusBar: vscode.StatusBarItem;
+
+// Active project state
+export interface ActiveProject {
+    alias: string;
+    path: string;
+    name: string;
+}
+
+let activeProject: ActiveProject | null = null;
+
+// Workspace context
+let workspaceRoot: string | null = null;
+let workspaceManifest: WorkspaceManifest | null = null;
+
+/**
+ * Get the current active project.
+ */
+export function getActiveProject(): ActiveProject | null {
+    return activeProject;
+}
+
+/**
+ * Set the active project and update status bar.
+ */
+export function setActiveProject(project: ActiveProject | null): void {
+    activeProject = project;
+    updateProjectStatusBar();
+    // Refresh tree views to reflect active project
+    refreshAll();
+}
+
+/**
+ * Get the workspace manifest if we're in a multi-project workspace.
+ */
+export function getWorkspaceManifest(): WorkspaceManifest | null {
+    return workspaceManifest;
+}
+
+/**
+ * Get the workspace root if we're in a multi-project workspace.
+ */
+export function getWorkspaceRoot(): string | null {
+    return workspaceRoot;
+}
+
+/**
+ * Check if we're in a multi-project workspace.
+ */
+export function isInWorkspace(): boolean {
+    return workspaceManifest !== null;
+}
+
+/**
+ * Update status bar to show active project.
+ */
+function updateProjectStatusBar(): void {
+    if (!projectStatusBar) {
+        return;
+    }
+
+    if (activeProject) {
+        projectStatusBar.text = `$(project) ${activeProject.alias}`;
+        projectStatusBar.tooltip = `LDF Project: ${activeProject.alias}\nClick to switch project`;
+        projectStatusBar.show();
+    } else if (workspaceManifest) {
+        projectStatusBar.text = `$(root-folder) ${workspaceManifest.name || 'Workspace'}`;
+        projectStatusBar.tooltip = 'LDF Workspace - Click to select project';
+        projectStatusBar.show();
+    } else {
+        projectStatusBar.hide();
+    }
+}
+
+/**
+ * Initialize workspace detection.
+ */
+async function initializeWorkspaceContext(
+    context: vscode.ExtensionContext,
+    primaryFolder: string
+): Promise<void> {
+    // Check for workspace manifest
+    const wsInfo = detectWorkspaceContext(primaryFolder);
+
+    if (wsInfo) {
+        workspaceRoot = wsInfo.root;
+        workspaceManifest = wsInfo.manifest;
+
+        // Store in workspace state for commands to access
+        await context.workspaceState.update('ldf.workspaceRoot', wsInfo.root);
+        await context.workspaceState.update('ldf.workspaceManifest', wsInfo.manifest);
+
+        console.log(`LDF: Detected workspace "${wsInfo.manifest.name}" at ${wsInfo.root}`);
+
+        // Resolve all projects
+        const projects = await resolveProjects(wsInfo.manifest, wsInfo.root);
+        console.log(`LDF: Found ${projects.length} projects in workspace`);
+
+        // Set context for command visibility
+        vscode.commands.executeCommand('setContext', 'ldf.hasWorkspace', true);
+        vscode.commands.executeCommand('setContext', 'ldf.projectCount', projects.length);
+    } else {
+        workspaceRoot = null;
+        workspaceManifest = null;
+        await context.workspaceState.update('ldf.workspaceRoot', undefined);
+        await context.workspaceState.update('ldf.workspaceManifest', undefined);
+        vscode.commands.executeCommand('setContext', 'ldf.hasWorkspace', false);
+    }
+
+    updateProjectStatusBar();
+}
 
 /**
  * Try to find ldf executable in common locations.
@@ -230,6 +351,14 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand('ldf.setupLdf', () => cloneAndInstallLdf())
     );
 
+    // Create status bar for project indicator
+    projectStatusBar = vscode.window.createStatusBarItem(
+        vscode.StatusBarAlignment.Left,
+        100
+    );
+    projectStatusBar.command = 'ldf.switchProject';
+    context.subscriptions.push(projectStatusBar);
+
     try {
         // Get workspace folder
         const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
@@ -247,6 +376,11 @@ export function activate(context: vscode.ExtensionContext) {
 
         // Use first folder for auto-detection prompt
         const primaryFolder = ldfFolders[0] || workspaceFolder.uri.fsPath;
+
+        // Initialize workspace context (detects ldf-workspace.yaml)
+        initializeWorkspaceContext(context, primaryFolder).catch(err =>
+            console.error('LDF: Workspace context initialization failed:', err)
+        );
 
         // Auto-detect ldf and prompt user before configuring
         const detectedPath = detectLdfPath(primaryFolder);
@@ -348,6 +482,21 @@ export function activate(context: vscode.ExtensionContext) {
                 guardrailsWatcher.onDidCreate(() => guardrailProvider.refresh());
                 guardrailsWatcher.onDidDelete(() => guardrailProvider.refresh());
                 context.subscriptions.push(guardrailsWatcher);
+
+                // Watch ldf-workspace.yaml for workspace changes
+                const workspaceWatcher = vscode.workspace.createFileSystemWatcher(
+                    new vscode.RelativePattern(folder, `**/${WORKSPACE_MANIFEST}`)
+                );
+                const refreshWorkspace = () => {
+                    initializeWorkspaceContext(context, primaryFolder).catch(err =>
+                        console.error('LDF: Workspace context refresh failed:', err)
+                    );
+                    refreshAll();
+                };
+                workspaceWatcher.onDidChange(refreshWorkspace);
+                workspaceWatcher.onDidCreate(refreshWorkspace);
+                workspaceWatcher.onDidDelete(refreshWorkspace);
+                context.subscriptions.push(workspaceWatcher);
             }
         }
 
@@ -389,6 +538,9 @@ function registerEmptyCommands(context: vscode.ExtensionContext) {
         'ldf.showGuardrailDetails',
         'ldf.markTaskComplete',
         'ldf.initProject',
+        'ldf.selectPrimaryGuardrailWorkspace',
+        'ldf.switchProject',
+        'ldf.workspaceReport',
     ];
 
     for (const cmd of commands) {
@@ -399,8 +551,36 @@ function registerEmptyCommands(context: vscode.ExtensionContext) {
         );
     }
 
+    // Register empty tree providers with helpful messages
+    const emptyProvider = new EmptyTreeProvider('Open a folder to view specs');
+    const emptyGuardrailProvider = new EmptyTreeProvider('Open a folder to view guardrails');
+    const emptyTaskProvider = new EmptyTreeProvider('Open a folder to view tasks');
+
+    context.subscriptions.push(
+        vscode.window.createTreeView('ldf-specs', { treeDataProvider: emptyProvider }),
+        vscode.window.createTreeView('ldf-guardrails', { treeDataProvider: emptyGuardrailProvider }),
+        vscode.window.createTreeView('ldf-tasks', { treeDataProvider: emptyTaskProvider })
+    );
+
     // Note: ldf.setupLdf is registered at the top of activate() before this function
     // is called, so it's already available and works without a workspace
+}
+
+/**
+ * Empty tree provider that shows a helpful message
+ */
+class EmptyTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
+    constructor(private message: string) {}
+
+    getTreeItem(element: vscode.TreeItem): vscode.TreeItem {
+        return element;
+    }
+
+    getChildren(): vscode.TreeItem[] {
+        const item = new vscode.TreeItem(this.message);
+        item.iconPath = new vscode.ThemeIcon('info');
+        return [item];
+    }
 }
 
 export function deactivate() {

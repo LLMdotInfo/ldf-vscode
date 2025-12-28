@@ -12,6 +12,8 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
+import { detectWorkspaceContext, resolveProjects, getProjectDisplayName } from './workspace';
+import { getActiveProject } from './extension';
 
 export interface SpecInfo {
     name: string;
@@ -34,13 +36,35 @@ export enum SpecStatus {
     Error = 'error',
 }
 
-export class SpecTreeProvider implements vscode.TreeDataProvider<SpecTreeItem> {
-    private _onDidChangeTreeData: vscode.EventEmitter<SpecTreeItem | undefined | null | void> =
-        new vscode.EventEmitter<SpecTreeItem | undefined | null | void>();
-    readonly onDidChangeTreeData: vscode.Event<SpecTreeItem | undefined | null | void> =
+/** Tree item types for hierarchical display */
+type SpecTreeItemType = SpecTreeItem | WorkspaceFolderItem;
+
+/**
+ * Tree item for workspace/project folder in multi-root mode
+ */
+export class WorkspaceFolderItem extends vscode.TreeItem {
+    constructor(
+        public readonly workspaceName: string,
+        public readonly workspacePath: string,
+        public readonly projectAlias?: string
+    ) {
+        super(projectAlias || workspaceName, vscode.TreeItemCollapsibleState.Expanded);
+        this.contextValue = 'workspace-folder';
+        this.iconPath = new vscode.ThemeIcon('folder');
+        this.tooltip = workspacePath;
+        if (projectAlias && projectAlias !== workspaceName) {
+            this.description = workspaceName;
+        }
+    }
+}
+
+export class SpecTreeProvider implements vscode.TreeDataProvider<SpecTreeItemType> {
+    private _onDidChangeTreeData: vscode.EventEmitter<SpecTreeItemType | undefined | null | void> =
+        new vscode.EventEmitter<SpecTreeItemType | undefined | null | void>();
+    readonly onDidChangeTreeData: vscode.Event<SpecTreeItemType | undefined | null | void> =
         this._onDidChangeTreeData.event;
 
-    private workspacePaths: Array<{ path: string; name: string }> = [];
+    private workspacePaths: Array<{ path: string; name: string; projectAlias?: string }> = [];
     private specs: SpecInfo[] = [];
 
     constructor(workspacePath: string | string[]) {
@@ -49,19 +73,32 @@ export class SpecTreeProvider implements vscode.TreeDataProvider<SpecTreeItem> {
 
     /**
      * Update workspace paths (supports single path or array for multi-root)
+     * Also detects project aliases from ldf-workspace.yaml when available
      */
     setWorkspacePaths(workspacePath: string | string[]): void {
-        if (Array.isArray(workspacePath)) {
-            this.workspacePaths = workspacePath.map(p => ({
+        const paths = Array.isArray(workspacePath) ? workspacePath : [workspacePath];
+        this.workspacePaths = paths.map(p => {
+            const entry: { path: string; name: string; projectAlias?: string } = {
                 path: p,
                 name: path.basename(p)
-            }));
-        } else {
-            this.workspacePaths = [{
-                path: workspacePath,
-                name: path.basename(workspacePath)
-            }];
-        }
+            };
+            // Try to get project alias from workspace manifest
+            const wsContext = detectWorkspaceContext(p);
+            if (wsContext) {
+                // Find matching project in manifest
+                resolveProjects(wsContext.manifest, wsContext.root).then(projects => {
+                    for (const project of projects) {
+                        const projectPath = path.resolve(wsContext.root, project.path);
+                        if (projectPath === p || p.startsWith(projectPath + path.sep)) {
+                            entry.projectAlias = getProjectDisplayName(project);
+                            this._onDidChangeTreeData.fire(); // Refresh to show alias
+                            break;
+                        }
+                    }
+                });
+            }
+            return entry;
+        });
     }
 
     /**
@@ -90,28 +127,83 @@ export class SpecTreeProvider implements vscode.TreeDataProvider<SpecTreeItem> {
         this._onDidChangeTreeData.fire();
     }
 
-    getTreeItem(element: SpecTreeItem): vscode.TreeItem {
+    getTreeItem(element: SpecTreeItemType): vscode.TreeItem {
         return element;
     }
 
-    getChildren(element?: SpecTreeItem): Thenable<SpecTreeItem[]> {
+    getChildren(element?: SpecTreeItemType): Thenable<SpecTreeItemType[]> {
         if (!element) {
-            // Root level - show specs
+            // Root level: show workspace folders (multi-root) or specs directly (single-root)
+            // When active project is set, skip folder grouping and show specs directly
+            const activeProject = getActiveProject();
+            const showFolderGrouping = this.workspacePaths.length > 1 && !activeProject;
+
+            if (showFolderGrouping) {
+                // Filter out workspaces with no specs
+                const workspacesWithSpecs = this.workspacePaths.filter(ws =>
+                    this.specs.some(spec => spec.folderPath === ws.path)
+                );
+                return Promise.resolve(workspacesWithSpecs.map(ws =>
+                    new WorkspaceFolderItem(ws.name, ws.path, ws.projectAlias)
+                ));
+            }
+            // Single-root or active project: show specs directly
             return Promise.resolve(this.getSpecItems());
-        } else if (element.contextValue === 'spec') {
+        }
+
+        if (element instanceof WorkspaceFolderItem) {
+            // Workspace level: show specs for this workspace
+            return Promise.resolve(this.getSpecItemsForWorkspace(element.workspacePath));
+        }
+
+        if (element instanceof SpecTreeItem && element.contextValue === 'spec') {
             // Spec level - show files
             return Promise.resolve(this.getSpecFileItems(element.specInfo!));
         }
+
         return Promise.resolve([]);
+    }
+
+    /**
+     * Get workspace folder items for multi-root display
+     */
+    private getWorkspaceFolderItems(): WorkspaceFolderItem[] {
+        return this.workspacePaths.map(ws =>
+            new WorkspaceFolderItem(ws.name, ws.path, ws.projectAlias)
+        );
+    }
+
+    /**
+     * Get spec items for a specific workspace
+     */
+    private getSpecItemsForWorkspace(workspacePath: string): SpecTreeItem[] {
+        return this.specs
+            .filter(spec => spec.folderPath === workspacePath)
+            .map(spec => {
+                // Don't show folder name in hierarchical mode (already shown in parent)
+                const specForDisplay = { ...spec, folderName: undefined };
+                return new SpecTreeItem(
+                    spec.name,
+                    specForDisplay,
+                    vscode.TreeItemCollapsibleState.Collapsed
+                );
+            });
     }
 
     private loadSpecs(): void {
         this.specs = [];
         const config = vscode.workspace.getConfiguration('ldf');
         const specsPath = config.get('specsDirectory', '.ldf/specs');
-        const isMultiRoot = this.workspacePaths.length > 1;
 
-        for (const workspace of this.workspacePaths) {
+        // Filter to active project if one is selected
+        const activeProject = getActiveProject();
+        const workspacesToLoad = activeProject
+            ? this.workspacePaths.filter(w => w.path === activeProject.path)
+            : this.workspacePaths;
+
+        const isMultiRoot = workspacesToLoad.length > 1;
+
+        for (const workspace of workspacesToLoad) {
             const specsDir = path.join(workspace.path, specsPath);
 
             if (!fs.existsSync(specsDir)) {

@@ -11,6 +11,8 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { parseTasksContent, markTaskInContent } from './utils';
+import { detectWorkspaceContext, resolveProjects, getProjectDisplayName } from './workspace';
+import { getActiveProject } from './extension';
 
 export interface TaskInfo {
     id: string;
@@ -22,14 +24,60 @@ export interface TaskInfo {
     folderPath?: string;  // Workspace folder this task belongs to
 }
 
-export class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
-    private _onDidChangeTreeData: vscode.EventEmitter<TaskTreeItem | undefined | null | void> =
-        new vscode.EventEmitter<TaskTreeItem | undefined | null | void>();
-    readonly onDidChangeTreeData: vscode.Event<TaskTreeItem | undefined | null | void> =
+/** Tree item types for hierarchical display */
+type TaskTreeItemType = TaskTreeItem | WorkspaceFolderItem | TaskSectionItem;
+
+/**
+ * Tree item for task section headers (Current Tasks / Completed Tasks)
+ */
+export class TaskSectionItem extends vscode.TreeItem {
+    constructor(
+        public readonly sectionType: 'current' | 'completed',
+        public readonly count: number,
+        public readonly workspacePath?: string // For multi-root mode
+    ) {
+        super(
+            sectionType === 'current'
+                ? `Current Tasks (${count})`
+                : `Completed Tasks (${count})`,
+            sectionType === 'completed'
+                ? vscode.TreeItemCollapsibleState.Collapsed
+                : vscode.TreeItemCollapsibleState.Expanded
+        );
+        this.contextValue = 'task-section';
+        this.iconPath = sectionType === 'completed'
+            ? new vscode.ThemeIcon('check-all', new vscode.ThemeColor('charts.green'))
+            : new vscode.ThemeIcon('tasklist');
+    }
+}
+
+/**
+ * Tree item for workspace/project folder in multi-root mode
+ */
+export class WorkspaceFolderItem extends vscode.TreeItem {
+    constructor(
+        public readonly workspaceName: string,
+        public readonly workspacePath: string,
+        public readonly projectAlias?: string
+    ) {
+        super(projectAlias || workspaceName, vscode.TreeItemCollapsibleState.Expanded);
+        this.contextValue = 'workspace-folder';
+        this.iconPath = new vscode.ThemeIcon('folder');
+        this.tooltip = workspacePath;
+        if (projectAlias && projectAlias !== workspaceName) {
+            this.description = workspaceName;
+        }
+    }
+}
+
+export class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItemType> {
+    private _onDidChangeTreeData: vscode.EventEmitter<TaskTreeItemType | undefined | null | void> =
+        new vscode.EventEmitter<TaskTreeItemType | undefined | null | void>();
+    readonly onDidChangeTreeData: vscode.Event<TaskTreeItemType | undefined | null | void> =
         this._onDidChangeTreeData.event;
 
     private tasks: TaskInfo[] = [];
-    private workspacePaths: Array<{ path: string; name: string }> = [];
+    private workspacePaths: Array<{ path: string; name: string; projectAlias?: string }> = [];
 
     constructor(workspacePath: string | string[]) {
         this.setWorkspacePaths(workspacePath);
@@ -37,19 +85,32 @@ export class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
 
     /**
      * Update workspace paths (supports single path or array for multi-root)
+     * Also detects project aliases from ldf-workspace.yaml when available
      */
     setWorkspacePaths(workspacePath: string | string[]): void {
-        if (Array.isArray(workspacePath)) {
-            this.workspacePaths = workspacePath.map(p => ({
+        const paths = Array.isArray(workspacePath) ? workspacePath : [workspacePath];
+        this.workspacePaths = paths.map(p => {
+            const entry: { path: string; name: string; projectAlias?: string } = {
                 path: p,
                 name: path.basename(p)
-            }));
-        } else {
-            this.workspacePaths = [{
-                path: workspacePath,
-                name: path.basename(workspacePath)
-            }];
-        }
+            };
+            // Try to get project alias from workspace manifest
+            const wsContext = detectWorkspaceContext(p);
+            if (wsContext) {
+                // Find matching project in manifest
+                resolveProjects(wsContext.manifest, wsContext.root).then(projects => {
+                    for (const project of projects) {
+                        const projectPath = path.resolve(wsContext.root, project.path);
+                        if (projectPath === p || p.startsWith(projectPath + path.sep)) {
+                            entry.projectAlias = getProjectDisplayName(project);
+                            this._onDidChangeTreeData.fire(); // Refresh to show alias
+                            break;
+                        }
+                    }
+                });
+            }
+            return entry;
+        });
     }
 
     /**
@@ -78,15 +139,141 @@ export class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
         this._onDidChangeTreeData.fire();
     }
 
-    getTreeItem(element: TaskTreeItem): vscode.TreeItem {
+    getTreeItem(element: TaskTreeItemType): vscode.TreeItem {
         return element;
     }
 
-    getChildren(element?: TaskTreeItem): Thenable<TaskTreeItem[]> {
+    getChildren(element?: TaskTreeItemType): Thenable<TaskTreeItemType[]> {
+        const config = vscode.workspace.getConfiguration('ldf');
+        const showInline = config.get('showCompletedTasksInline', false);
+
         if (!element) {
-            return Promise.resolve(this.getTaskItems());
+            // Root level
+            // When active project is set, skip folder grouping and show tasks directly
+            const activeProject = getActiveProject();
+            const showFolderGrouping = this.workspacePaths.length > 1 && !activeProject;
+
+            if (showFolderGrouping) {
+                // Multi-root: filter out workspaces with no tasks
+                const workspacesWithTasks = this.workspacePaths.filter(ws =>
+                    this.tasks.some(task => task.folderPath === ws.path)
+                );
+                return Promise.resolve(workspacesWithTasks.map(ws =>
+                    new WorkspaceFolderItem(ws.name, ws.path, ws.projectAlias)
+                ));
+            }
+
+            // Single-root or active project: show section headers or all tasks inline
+            if (showInline) {
+                return Promise.resolve(this.getTaskItems(true)); // Include completed
+            }
+            return Promise.resolve(this.getSectionItems());
         }
+
+        if (element instanceof TaskSectionItem) {
+            // Section level: show tasks filtered by section type
+            const showCompleted = element.sectionType === 'completed';
+            if (element.workspacePath) {
+                return Promise.resolve(this.getTaskItemsForWorkspace(element.workspacePath, showCompleted));
+            }
+            return Promise.resolve(this.getTaskItems(false, showCompleted));
+        }
+
+        if (element instanceof WorkspaceFolderItem) {
+            // Workspace level: show section headers or tasks inline
+            if (showInline) {
+                return Promise.resolve(this.getTaskItemsForWorkspace(element.workspacePath, true));
+            }
+            return Promise.resolve(this.getSectionItemsForWorkspace(element.workspacePath));
+        }
+
         return Promise.resolve([]);
+    }
+
+    /**
+     * Get section header items for single-root display
+     */
+    private getSectionItems(): TaskTreeItemType[] {
+        const currentTasks = this.tasks.filter(t => t.status !== 'complete');
+        const completedTasks = this.tasks.filter(t => t.status === 'complete');
+
+        const items: TaskTreeItemType[] = [];
+
+        if (currentTasks.length > 0 || completedTasks.length === 0) {
+            items.push(new TaskSectionItem('current', currentTasks.length));
+        }
+
+        if (completedTasks.length > 0) {
+            items.push(new TaskSectionItem('completed', completedTasks.length));
+        }
+
+        return items;
+    }
+
+    /**
+     * Get section header items for a specific workspace
+     */
+    private getSectionItemsForWorkspace(workspacePath: string): TaskTreeItemType[] {
+        const workspaceTasks = this.tasks.filter(t => t.folderPath === workspacePath);
+        const currentTasks = workspaceTasks.filter(t => t.status !== 'complete');
+        const completedTasks = workspaceTasks.filter(t => t.status === 'complete');
+
+        const items: TaskTreeItemType[] = [];
+
+        if (currentTasks.length > 0 || completedTasks.length === 0) {
+            items.push(new TaskSectionItem('current', currentTasks.length, workspacePath));
+        }
+
+        if (completedTasks.length > 0) {
+            items.push(new TaskSectionItem('completed', completedTasks.length, workspacePath));
+        }
+
+        return items;
+    }
+
+    /**
+     * Get workspace folder items for multi-root display
+     */
+    private getWorkspaceFolderItems(): WorkspaceFolderItem[] {
+        return this.workspacePaths.map(ws =>
+            new WorkspaceFolderItem(ws.name, ws.path, ws.projectAlias)
+        );
+    }
+
+    /**
+     * Get task items for a specific workspace
+     * @param workspacePath Path to the workspace folder
+     * @param includeAll If true, include all tasks; if false, filter by showCompleted
+     * @param showCompleted If true (and includeAll is false), show only completed; otherwise show only pending/next
+     */
+    private getTaskItemsForWorkspace(workspacePath: string, includeAll: boolean = false, showCompleted: boolean = false): TaskTreeItem[] {
+        let workspaceTasks = this.tasks.filter(task => task.folderPath === workspacePath);
+
+        if (!includeAll) {
+            workspaceTasks = workspaceTasks.filter(task =>
+                showCompleted ? task.status === 'complete' : task.status !== 'complete'
+            );
+        }
+
+        if (workspaceTasks.length === 0) {
+            const message = showCompleted ? 'No completed tasks' : 'No tasks found';
+            return [
+                new TaskTreeItem({
+                    id: 'no-tasks',
+                    specName: '',
+                    title: message,
+                    status: 'pending',
+                    line: 0,
+                    folderPath: workspacePath
+                }),
+            ];
+        }
+
+        // Don't show folder name in hierarchical mode (already shown in parent)
+        return workspaceTasks.map(task => {
+            const taskForDisplay = { ...task, folderName: undefined };
+            return new TaskTreeItem(taskForDisplay);
+        });
     }
 
     private loadTasks(): void {
@@ -94,9 +281,17 @@ export class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
 
         const config = vscode.workspace.getConfiguration('ldf');
         const specsPath = config.get('specsDirectory', '.ldf/specs');
-        const isMultiRoot = this.workspacePaths.length > 1;
+        const perWorkspaceLimit = 50;
 
-        for (const workspace of this.workspacePaths) {
+        // Filter to active project if one is selected
+        const activeProject = getActiveProject();
+        const workspacesToLoad = activeProject
+            ? this.workspacePaths.filter(w => w.path === activeProject.path)
+            : this.workspacePaths;
+
+        const isMultiRoot = workspacesToLoad.length > 1;
+
+        for (const workspace of workspacesToLoad) {
             const specsDir = path.join(workspace.path, specsPath);
 
             if (!fs.existsSync(specsDir)) {
@@ -106,6 +301,8 @@ export class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
             const specs = fs.readdirSync(specsDir, { withFileTypes: true })
                 .filter((d) => d.isDirectory())
                 .map((d) => d.name);
+
+            const workspaceTasks: TaskInfo[] = [];
 
             for (const specName of specs) {
                 const tasksPath = path.join(specsDir, specName, 'tasks.md');
@@ -119,18 +316,23 @@ export class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
                         }
                         task.folderPath = workspace.path;
                     }
-                    this.tasks.push(...specTasks);
+                    workspaceTasks.push(...specTasks);
                 }
             }
+
+            // Sort per-workspace tasks
+            workspaceTasks.sort((a, b) => {
+                const statusOrder = { 'next': 0, pending: 1, complete: 2 };
+                return statusOrder[a.status] - statusOrder[b.status] || a.id.localeCompare(b.id);
+            });
+
+            // Apply per-workspace limit to ensure fair representation
+            this.tasks.push(...workspaceTasks.slice(0, perWorkspaceLimit));
         }
 
-        // Sort: next first, then pending, then complete, then by folder
+        // Final sort for display (maintains folder grouping)
         this.tasks.sort((a, b) => {
-            const statusOrder = {
-                'next': 0,
-                pending: 1,
-                complete: 2,
-            };
+            const statusOrder = { 'next': 0, pending: 1, complete: 2 };
             const orderA = statusOrder[a.status];
             const orderB = statusOrder[b.status];
             if (orderA !== orderB) return orderA - orderB;
@@ -140,9 +342,6 @@ export class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
             }
             return a.id.localeCompare(b.id);
         });
-
-        // Limit to reasonable number
-        this.tasks = this.tasks.slice(0, 50);
     }
 
     private parseTasksFile(specName: string, content: string, folderPath: string): TaskInfo[] {
@@ -169,22 +368,34 @@ export class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
         return tasks;
     }
 
-    private getTaskItems(): TaskTreeItem[] {
-        if (this.tasks.length === 0) {
+    /**
+     * Get task items for single-root display
+     * @param includeAll If true, include all tasks; if false, filter by showCompleted
+     * @param showCompleted If true (and includeAll is false), show only completed; otherwise show only pending/next
+     */
+    private getTaskItems(includeAll: boolean = false, showCompleted: boolean = false): TaskTreeItem[] {
+        let filteredTasks = this.tasks;
+
+        if (!includeAll) {
+            filteredTasks = this.tasks.filter(t =>
+                showCompleted ? t.status === 'complete' : t.status !== 'complete'
+            );
+        }
+
+        if (filteredTasks.length === 0) {
+            const message = showCompleted ? 'No completed tasks' : 'No tasks found';
             return [
                 new TaskTreeItem({
                     id: 'no-tasks',
                     specName: '',
-                    title: 'No tasks found',
+                    title: message,
                     status: 'pending',
                     line: 0,
                 }),
             ];
         }
 
-        return this.tasks
-            .filter((t) => t.status !== 'complete') // Only show incomplete
-            .map((task) => new TaskTreeItem(task));
+        return filteredTasks.map((task) => new TaskTreeItem(task));
     }
 
     getTasks(): TaskInfo[] {

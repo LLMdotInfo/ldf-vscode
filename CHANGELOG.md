@@ -5,6 +5,30 @@ All notable changes to the LDF VS Code Extension will be documented in this file
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2025-12-27
+
+### Added
+
+#### Multi-Project Workspace Support
+- **`ldf-workspace.yaml` Detection** - Automatically detects and parses workspace manifests
+- **Switch Project Command** - `LDF: Switch Project` to change active project in workspace
+- **Workspace Report Command** - `LDF: Workspace Report` shows status of all projects
+- **Project Status Bar** - Status bar indicator showing active project with click-to-switch
+- **Project Aliases** - Uses project aliases from workspace manifest in tree views
+
+#### Enhanced Tree Views
+- **Hierarchical Grouping** - Multi-root workspaces now show specs/tasks grouped under project folders
+- **Project Alias Display** - Shows project alias from manifest (or folder name fallback)
+- **Workspace Folder Icons** - Visual distinction for project folders in tree view
+
+#### Integration
+- **Workspace File Watcher** - Auto-refreshes when `ldf-workspace.yaml` changes
+- **Workspace Context API** - Extension exports `isInWorkspace()`, `getActiveProject()`, `getWorkspaceManifest()` for other extensions
+
+### Changed
+- Version number now aligns with LDF CLI version (1.1.0)
+- Tree view providers use hierarchical structure in multi-root mode
+
 ## [1.0.0] - 2025-12-26
 
 ### Added

@@ -39,6 +39,8 @@ Track implementation progress:
 | `LDF: Initialize LDF Project` | Set up LDF in current workspace |
 | `LDF: Setup LDF (Clone & Install)` | Install LDF from GitHub |
 | `LDF: Refresh Specs` | Refresh all views |
+| `LDF: Switch Project` | Switch active project in multi-project workspace |
+| `LDF: Workspace Report` | Show status of all projects in workspace |
 
 ### Snippets
 
@@ -117,10 +119,23 @@ The extension fully supports VS Code multi-root workspaces, including:
 - Separate spec trees per workspace folder
 - Independent guardrail configurations per workspace
 - Workspace-aware lint/audit commands
+- Hierarchical tree views with project folders
 
 **Duplicate folder names:** If you have multiple workspace folders with the same name (e.g., two folders named "app"), the extension distinguishes them by their full path internally while displaying the basename in the UI.
 
 **Primary Guardrail Workspace:** Use the `LDF: Select Primary Guardrail Workspace` command to apply one workspace's guardrails.yaml configuration to all workspaces. This is useful when you want consistent guardrails across multiple projects.
+
+### Multi-Project Workspace Support (ldf-workspace.yaml)
+
+The extension supports LDF's multi-project workspace feature, which uses `ldf-workspace.yaml` to manage multiple LDF projects:
+
+- **Automatic Detection** - Detects and parses `ldf-workspace.yaml` workspace manifests
+- **Project Aliases** - Uses project aliases from the manifest in tree views and status bar
+- **Switch Project Command** - Use `LDF: Switch Project` to change the active project
+- **Workspace Report** - Use `LDF: Workspace Report` to see status of all projects
+- **Status Bar Indicator** - Shows active project; click to switch
+
+To create a multi-project workspace, run `ldf workspace init` in the terminal to create an `ldf-workspace.yaml` manifest.
 
 ## Requirements
 

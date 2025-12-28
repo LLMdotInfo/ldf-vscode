@@ -11,6 +11,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as yaml from 'js-yaml';
+import { getActiveProject } from './extension';
 
 interface Guardrail {
     id: number;
@@ -33,6 +34,7 @@ type SpecStatus = 'done' | 'todo' | 'partial' | 'n/a';
 interface SpecCoverage {
     specName: string;
     status: SpecStatus;
+    justification?: string; // Reason for N/A status, if provided
 }
 
 interface GuardrailCoverage {
@@ -40,6 +42,7 @@ interface GuardrailCoverage {
     coveredBy: string[]; // spec names (for backward compatibility)
     specCoverage: SpecCoverage[]; // detailed per-spec status
     status: 'covered' | 'partial' | 'not-covered' | 'not-applicable';
+    justifications: string[]; // Collected justifications for N/A statuses
 }
 
 type TreeItem = GuardrailTreeItem | WorkspaceFolderItem;
@@ -119,12 +122,24 @@ export class GuardrailTreeProvider implements vscode.TreeDataProvider<TreeItem> 
     getChildren(element?: TreeItem): Thenable<TreeItem[]> {
         if (!element) {
             // Root level: show workspace folders (multi-root) or guardrails directly (single-root)
-            if (this.workspacePaths.length > 1) {
-                return Promise.resolve(this.getWorkspaceFolderItems());
+            // When active project is set, skip folder grouping and show guardrails directly
+            const activeProject = getActiveProject();
+            const showFolderGrouping = this.workspacePaths.length > 1 && !activeProject;
+
+            if (showFolderGrouping) {
+                // Multi-root: filter out workspaces with no guardrails
+                const workspacesWithGuardrails = this.workspacePaths.filter(ws =>
+                    this.guardrailsPerWorkspace.has(ws.path) &&
+                    (this.guardrailsPerWorkspace.get(ws.path)?.length ?? 0) > 0
+                );
+                return Promise.resolve(workspacesWithGuardrails.map(ws =>
+                    new WorkspaceFolderItem(ws.name, ws.path)
+                ));
             }
-            // Single-root: show guardrails for the only workspace (use full path)
-            const workspacePath = this.workspacePaths[0]?.path;
-            return Promise.resolve(this.getGuardrailItemsForWorkspace(workspacePath));
+
+            // Single-root or active project: show guardrails for the target workspace
+            const targetPath = activeProject?.path || this.workspacePaths[0]?.path;
+            return Promise.resolve(this.getGuardrailItemsForWorkspace(targetPath));
         }
 
         if (element instanceof WorkspaceFolderItem) {
@@ -205,10 +220,14 @@ export class GuardrailTreeProvider implements vscode.TreeDataProvider<TreeItem> 
         this.lastParseError = null;
 
         // Determine which workspaces to load guardrails from
-        let workspacesToLoad = this.workspacePaths;
+        // Priority: 1) Active project, 2) Primary guardrail workspace, 3) All workspaces
+        const activeProject = getActiveProject();
+        let workspacesToLoad = activeProject
+            ? this.workspacePaths.filter(w => w.path === activeProject.path)
+            : this.workspacePaths;
 
-        // If primary workspace is set, use only that workspace's guardrails
-        if (primaryWorkspacePath) {
+        // If primary workspace is set and no active project, use only that workspace's guardrails
+        if (!activeProject && primaryWorkspacePath) {
             const primaryWs = this.workspacePaths.find(w => w.path === primaryWorkspacePath);
             if (primaryWs) {
                 workspacesToLoad = [primaryWs];
@@ -560,7 +579,13 @@ export class GuardrailTreeProvider implements vscode.TreeDataProvider<TreeItem> 
         const config = vscode.workspace.getConfiguration('ldf');
         const specsPath = config.get('specsDirectory', '.ldf/specs');
 
-        for (const workspace of this.workspacePaths) {
+        // Filter to active project if one is selected
+        const activeProject = getActiveProject();
+        const workspacesToAnalyze = activeProject
+            ? this.workspacePaths.filter(w => w.path === activeProject.path)
+            : this.workspacePaths;
+
+        for (const workspace of workspacesToAnalyze) {
             // Use full path as key for lookups
             const guardrails = this.guardrailsPerWorkspace.get(workspace.path) || [];
 
@@ -570,6 +595,7 @@ export class GuardrailTreeProvider implements vscode.TreeDataProvider<TreeItem> 
                 coveredBy: [],
                 specCoverage: [],
                 status: 'not-covered' as const,
+                justifications: [],
             }));
 
             // Scan specs for this workspace
@@ -603,6 +629,7 @@ export class GuardrailTreeProvider implements vscode.TreeDataProvider<TreeItem> 
             coveredBy: [],
             specCoverage: [],
             status: 'not-covered' as const,
+            justifications: [],
         }));
 
         // Aggregate coverage from all workspaces into flat view
@@ -669,20 +696,27 @@ export class GuardrailTreeProvider implements vscode.TreeDataProvider<TreeItem> 
     private parseGuardrailCoverageForWorkspace(specName: string, content: string, workspaceCoverage: GuardrailCoverage[]): void {
         // Look for guardrail coverage matrix in requirements
         // Format: | 1. Testing Coverage | [US-1] | [S3.2] | [T-1] | Alice | DONE |
-        // Accept status values: DONE, TODO, PARTIAL, N/A
+        // Accept status values: DONE, TODO, PARTIAL, N/A, N/A - <justification>
         const matrixPattern = /\|\s*(\d+)\.\s*([^|]+)\s*\|[^|]+\|[^|]+\|[^|]+\|[^|]+\|\s*([^|]+?)\s*\|/gi;
         let match;
 
         while ((match = matrixPattern.exec(content)) !== null) {
             const guardrailId = parseInt(match[1]);
-            const statusText = match[3].trim().toUpperCase();
+            const rawStatusText = match[3].trim();
+            const statusText = rawStatusText.toUpperCase();
 
             // Parse status from the matrix
             let status: SpecStatus;
+            let justification: string | undefined;
+
             if (statusText === 'DONE') {
                 status = 'done';
-            } else if (statusText === 'N/A' || statusText === 'NA' || statusText === 'NOT APPLICABLE') {
+            } else if (statusText.startsWith('N/A') || statusText === 'NA' || statusText === 'NOT APPLICABLE') {
                 status = 'n/a';
+                // Extract justification if present: "N/A - reason" -> "reason"
+                if (rawStatusText.includes('-')) {
+                    justification = rawStatusText.split('-').slice(1).join('-').trim();
+                }
             } else if (statusText === 'PARTIAL' || statusText === 'IN PROGRESS') {
                 status = 'partial';
             } else {
@@ -695,10 +729,14 @@ export class GuardrailTreeProvider implements vscode.TreeDataProvider<TreeItem> 
                 // Check if spec already tracked (avoid duplicates)
                 const existingSpec = coverage.specCoverage.find(sc => sc.specName === specName);
                 if (!existingSpec) {
-                    coverage.specCoverage.push({ specName, status });
+                    coverage.specCoverage.push({ specName, status, justification });
                     // Maintain coveredBy for display (only DONE specs)
                     if (status === 'done' && !coverage.coveredBy.includes(specName)) {
                         coverage.coveredBy.push(specName);
+                    }
+                    // Collect justifications for N/A statuses
+                    if (status === 'n/a' && justification) {
+                        coverage.justifications.push(justification);
                     }
                 }
             }
@@ -822,7 +860,16 @@ export class GuardrailTreeItem extends vscode.TreeItem {
             this.guardrailId = coverage.guardrail.id;
             this.workspacePath = workspacePath;
             this.contextValue = 'guardrail';
-            this.tooltip = coverage.guardrail.description;
+
+            // Build tooltip with description and N/A justification if applicable
+            let tooltipText = coverage.guardrail.description;
+            if (coverage.status === 'not-applicable' && coverage.justifications.length > 0) {
+                // Show unique justifications
+                const uniqueJustifications = [...new Set(coverage.justifications)];
+                tooltipText += `\n\nNot Applicable: ${uniqueJustifications.join('; ')}`;
+            }
+            this.tooltip = tooltipText;
+
             // Use specCoverage.length to show all specs (not just DONE)
             this.description = `${coverage.specCoverage.length} specs`;
             this.iconPath = GuardrailTreeItem.getStatusIcon(coverage);
@@ -859,7 +906,7 @@ export class GuardrailTreeItem extends vscode.TreeItem {
                     new vscode.ThemeColor('charts.red')
                 );
             case 'not-applicable':
-                return new vscode.ThemeIcon('dash');
+                return new vscode.ThemeIcon('circle-large-outline', new vscode.ThemeColor('disabledForeground'));
             default:
                 return new vscode.ThemeIcon('circle-outline');
         }
