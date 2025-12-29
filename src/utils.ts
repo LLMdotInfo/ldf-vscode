@@ -16,8 +16,8 @@ import { promisify } from 'util';
  */
 export const execFileAsync = promisify(execFile);
 
-// Valid audit types - allowlist for security
-export const VALID_AUDIT_TYPES = ['spec-review', 'security-check', 'gap-analysis', 'edge-cases'];
+// Valid audit types - allowlist for security (must match LDF CLI audit.py)
+export const VALID_AUDIT_TYPES = ['spec-review', 'security', 'gap-analysis', 'edge-cases', 'architecture'];
 
 /**
  * Shell-escape a string for safe use in terminal commands.

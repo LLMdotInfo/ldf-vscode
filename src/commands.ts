@@ -22,6 +22,7 @@ import {
     getWorkspaceManifest,
     getWorkspaceRoot,
     isInWorkspace,
+    getLdfEnabledFolders,
     ActiveProject
 } from './extension';
 import { resolveProjects, isLdfProject } from './workspace';
@@ -204,10 +205,19 @@ export function registerCommands(
         )
     );
 
-    // Lint all specs
+    // Lint all specs (supports multi-root workspaces)
     context.subscriptions.push(
         vscode.commands.registerCommand('ldf.lintAllSpecs', async () => {
-            await runLint(workspacePath);
+            const ldfFolders = getLdfEnabledFolders();
+            if (ldfFolders.length === 0) {
+                // Fallback to default workspace if no LDF projects found
+                await runLint(workspacePath);
+            } else {
+                // Lint all LDF projects in the workspace
+                for (const folder of ldfFolders) {
+                    await runLint(folder);
+                }
+            }
         })
     );
 
@@ -300,9 +310,10 @@ export function registerCommands(
                 const auditType = await vscode.window.showQuickPick(
                     [
                         { label: 'Spec Review', value: 'spec-review' },
-                        { label: 'Security Check', value: 'security-check' },
+                        { label: 'Security Check', value: 'security' },
                         { label: 'Gap Analysis', value: 'gap-analysis' },
                         { label: 'Edge Cases', value: 'edge-cases' },
+                        { label: 'Architecture Review', value: 'architecture' },
                     ],
                     { placeHolder: 'Select audit type' }
                 );
@@ -412,31 +423,35 @@ export function registerCommands(
             // Detect CLI version (with fallback)
             const frameworkVersion = await getLdfVersion();
 
-            // Create config.yaml with schema matching LDF CLI expectations
+            // Create config.yaml with schema matching LDF CLI v1.1 expectations
             const projectName = path.basename(workspacePath);
             const timestamp = new Date().toISOString();
-            const configYaml = `# LDF Configuration
-version: "1.0"
-framework_version: "${frameworkVersion}"
-framework_updated: "${timestamp}"
+            const configYaml = `# LDF Configuration (v1.1 schema)
+_schema_version: "1.1"
 
 project:
   name: "${projectName}"
+  version: "1.0.0"
   specs_dir: .ldf/specs
 
-guardrails:
+ldf:
+  version: "${frameworkVersion}"
   preset: custom
-  overrides: {}
+  updated: "${timestamp}"
 
 question_packs:
-  - security
-  - testing
-  - api-design
-  - data-model
+  core:
+    - security
+    - testing
+    - api-design
+    - data-model
+  optional: []
 
 mcp_servers:
-  - spec_inspector
-  - coverage_reporter
+  enabled: true
+  servers:
+    - spec_inspector
+    - coverage_reporter
 
 lint:
   strict: false

@@ -178,7 +178,7 @@ function detectLdfPath(workspacePath: string): string | null {
 /**
  * Find all workspace folders that contain an LDF project (.ldf/config.yaml)
  */
-function getLdfEnabledFolders(): string[] {
+export function getLdfEnabledFolders(): string[] {
     const folders: string[] = [];
     for (const folder of vscode.workspace.workspaceFolders || []) {
         const configPath = path.join(folder.uri.fsPath, '.ldf', 'config.yaml');
