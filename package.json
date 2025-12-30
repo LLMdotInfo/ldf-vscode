@@ -2,7 +2,7 @@
   "name": "ldf-vscode",
   "displayName": "LDF - Spec-Driven Development",
   "description": "Visual tools for LDF (LLM Development Framework) spec-driven development workflow",
-  "version": "1.1.0",
+  "version": "1.1.2",
   "publisher": "llmdotinfo",
   "license": "MIT",
   "icon": "images/ldf-icon.png",
@@ -56,20 +56,45 @@
         {
           "id": "ldf-specs",
           "name": "Specifications",
-          "contextualTitle": "LDF Specs"
+          "contextualTitle": "LDF Specs",
+          "icon": "$(file-text)"
         },
         {
           "id": "ldf-guardrails",
           "name": "Guardrail Coverage",
-          "contextualTitle": "Guardrails"
+          "contextualTitle": "Guardrails",
+          "icon": "$(shield)"
         },
         {
           "id": "ldf-tasks",
-          "name": "Current Tasks",
-          "contextualTitle": "Tasks"
+          "name": "Tasks",
+          "contextualTitle": "Tasks",
+          "icon": "$(tasklist)"
         }
       ]
     },
+    "viewsWelcome": [
+      {
+        "view": "ldf-specs",
+        "contents": "## Get Started with LDF\n\n1. **Install** the LDF CLI\n2. **Detect** or browse for the executable\n3. **Open** a project with `.ldf/` folder\n\n[Install LDF](command:ldf.setupLdf)\n[Auto-Detect](command:ldf.autoDetectLdf)\n[Browse...](command:ldf.browseLdfPath)\n[View Guide](https://github.com/LLMdotInfo/ldf)",
+        "when": "ldf.ldfNotFound && workspaceFolderCount > 0"
+      },
+      {
+        "view": "ldf-specs",
+        "contents": "Open a folder to configure LDF.\n\n[Open Folder](command:vscode.openFolder)",
+        "when": "workspaceFolderCount == 0"
+      },
+      {
+        "view": "ldf-guardrails",
+        "contents": "LDF CLI not found.\n\n[Setup LDF](command:ldf.setupLdf)\n[Auto-Detect](command:ldf.autoDetectLdf)\n[Browse...](command:ldf.browseLdfPath)",
+        "when": "ldf.ldfNotFound && workspaceFolderCount > 0"
+      },
+      {
+        "view": "ldf-tasks",
+        "contents": "LDF CLI not found.\n\n[Setup LDF](command:ldf.setupLdf)\n[Auto-Detect](command:ldf.autoDetectLdf)",
+        "when": "ldf.ldfNotFound && workspaceFolderCount > 0"
+      }
+    ],
     "commands": [
       {
         "command": "ldf.refreshSpecs",
@@ -156,6 +181,24 @@
         "command": "ldf.workspaceReport",
         "title": "Workspace Report",
         "icon": "$(output)",
+        "category": "LDF"
+      },
+      {
+        "command": "ldf.browseLdfPath",
+        "title": "Browse for LDF Executable",
+        "icon": "$(folder-opened)",
+        "category": "LDF"
+      },
+      {
+        "command": "ldf.autoDetectLdf",
+        "title": "Auto-Detect LDF Installation",
+        "icon": "$(search)",
+        "category": "LDF"
+      },
+      {
+        "command": "ldf.clearLdfPath",
+        "title": "Clear Configured LDF Path",
+        "icon": "$(clear-all)",
         "category": "LDF"
       }
     ],
@@ -285,7 +328,10 @@
         },
         "ldf.outputMode": {
           "type": "string",
-          "enum": ["terminal", "outputPanel"],
+          "enum": [
+            "terminal",
+            "outputPanel"
+          ],
           "default": "terminal",
           "description": "Where to show lint/audit output: 'terminal' (default) or 'outputPanel' for captured output"
         },
@@ -303,26 +349,32 @@
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./",
+    "vscode:prepublish": "npm run package:esbuild",
+    "compile": "npm run check-types && npm run compile:esbuild && npm run compile:tests",
+    "compile:esbuild": "node esbuild.js",
+    "compile:tests": "tsc -p ./tsconfig.test.json",
+    "watch": "node esbuild.js --watch",
+    "watch:tsc": "tsc -watch -p ./",
+    "check-types": "tsc --noEmit",
+    "package:esbuild": "npm run check-types && node esbuild.js --production",
     "lint": "eslint src --ext ts",
+    "pretest": "npm run compile",
     "test": "node ./out/test/runTest.js",
+    "validate": "npm run check-types && npm run lint",
     "package": "vsce package",
     "publish": "vsce publish"
   },
   "devDependencies": {
-    "@types/glob": "^8.1.0",
     "@types/js-yaml": "^4.0.9",
     "@types/mocha": "^10.0.10",
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.85.0",
-    "@typescript-eslint/eslint-plugin": "^6.0.0",
-    "@typescript-eslint/parser": "^6.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.50.1",
+    "@typescript-eslint/parser": "^8.50.1",
     "@vscode/test-electron": "^2.5.2",
-    "@vscode/vsce": "^2.22.0",
+    "@vscode/vsce": "^3.2.0",
+    "esbuild": "^0.27.2",
     "eslint": "^8.0.0",
-    "glob": "^10.0.0",
     "mocha": "^11.7.5",
     "typescript": "^5.0.0"
   },
