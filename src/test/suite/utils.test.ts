@@ -112,13 +112,16 @@ suite('Utils Test Suite', () => {
     suite('VALID_AUDIT_TYPES', () => {
         test('should contain expected audit types', () => {
             assert.ok(VALID_AUDIT_TYPES.includes('spec-review'));
-            assert.ok(VALID_AUDIT_TYPES.includes('security-check'));
+            assert.ok(VALID_AUDIT_TYPES.includes('security'));
             assert.ok(VALID_AUDIT_TYPES.includes('gap-analysis'));
             assert.ok(VALID_AUDIT_TYPES.includes('edge-cases'));
+            assert.ok(VALID_AUDIT_TYPES.includes('architecture'));
         });
 
-        test('should have exactly 4 types', () => {
-            assert.strictEqual(VALID_AUDIT_TYPES.length, 4);
+        test('should have exactly 9 types', () => {
+            // 9 types: spec-review, code-audit, security, security-check,
+            // pre-launch, gap-analysis, edge-cases, architecture, full
+            assert.strictEqual(VALID_AUDIT_TYPES.length, 9);
         });
     });
 

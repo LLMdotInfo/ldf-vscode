@@ -24,6 +24,34 @@ export interface TaskInfo {
     folderPath?: string;  // Workspace folder this task belongs to
 }
 
+/**
+ * Sort tasks by numeric prefix in title (e.g., "1.4", "2.1", "10.2")
+ * Uses semantic version comparison: 1.10 sorts after 1.2 (not before!)
+ * Falls back to alphabetical if no numeric prefix found
+ */
+function sortTasksNumerically(tasks: TaskInfo[]): TaskInfo[] {
+    return [...tasks].sort((a, b) => {
+        // Extract numeric prefix like "1.4" or "2.10" from title
+        const numA = a.title.match(/^(\d+)(?:\.(\d+))?/);
+        const numB = b.title.match(/^(\d+)(?:\.(\d+))?/);
+
+        if (numA && numB) {
+            // Compare major versions first
+            const majorA = parseInt(numA[1], 10);
+            const majorB = parseInt(numB[1], 10);
+            if (majorA !== majorB) {
+                return majorA - majorB;
+            }
+            // Compare minor versions (default to 0 if not present)
+            const minorA = numA[2] ? parseInt(numA[2], 10) : 0;
+            const minorB = numB[2] ? parseInt(numB[2], 10) : 0;
+            return minorA - minorB;
+        }
+        // Fall back to alphabetical by title
+        return a.title.localeCompare(b.title);
+    });
+}
+
 /** Tree item types for hierarchical display */
 type TaskTreeItemType = TaskTreeItem | WorkspaceFolderItem | TaskSectionItem;
 
@@ -98,16 +126,20 @@ export class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItemTyp
             const wsContext = detectWorkspaceContext(p);
             if (wsContext) {
                 // Find matching project in manifest
-                resolveProjects(wsContext.manifest, wsContext.root).then(projects => {
-                    for (const project of projects) {
-                        const projectPath = path.resolve(wsContext.root, project.path);
-                        if (projectPath === p || p.startsWith(projectPath + path.sep)) {
-                            entry.projectAlias = getProjectDisplayName(project);
-                            this._onDidChangeTreeData.fire(); // Refresh to show alias
-                            break;
+                resolveProjects(wsContext.manifest, wsContext.root)
+                    .then(projects => {
+                        for (const project of projects) {
+                            const projectPath = path.resolve(wsContext.root, project.path);
+                            if (projectPath === p || p.startsWith(projectPath + path.sep)) {
+                                entry.projectAlias = getProjectDisplayName(project);
+                                this._onDidChangeTreeData.fire(); // Refresh to show alias
+                                break;
+                            }
                         }
-                    }
-                });
+                    })
+                    .catch(err => {
+                        console.error('LDF: Failed to resolve projects for task view:', err);
+                    });
             }
             return entry;
         });
@@ -269,8 +301,8 @@ export class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItemTyp
             ];
         }
 
-        // Don't show folder name in hierarchical mode (already shown in parent)
-        return workspaceTasks.map(task => {
+        // Sort tasks numerically and don't show folder name in hierarchical mode
+        return sortTasksNumerically(workspaceTasks).map(task => {
             const taskForDisplay = { ...task, folderName: undefined };
             return new TaskTreeItem(taskForDisplay);
         });
@@ -395,7 +427,8 @@ export class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItemTyp
             ];
         }
 
-        return filteredTasks.map((task) => new TaskTreeItem(task));
+        // Sort tasks numerically by title prefix (e.g., "1.4", "2.1")
+        return sortTasksNumerically(filteredTasks).map((task) => new TaskTreeItem(task));
     }
 
     getTasks(): TaskInfo[] {
@@ -449,7 +482,14 @@ export class TaskTreeItem extends vscode.TreeItem {
         super(taskInfo.title, vscode.TreeItemCollapsibleState.None);
 
         this.taskId = taskInfo.id;
-        this.contextValue = taskInfo.id === 'no-tasks' ? 'info' : 'task';
+        // Use different contextValue for completed tasks to hide "Mark Complete" command
+        if (taskInfo.id === 'no-tasks') {
+            this.contextValue = 'info';
+        } else if (taskInfo.status === 'complete') {
+            this.contextValue = 'task-completed';
+        } else {
+            this.contextValue = 'task';
+        }
         // Show folder prefix in multi-root workspaces
         if (taskInfo.folderName) {
             this.description = `${taskInfo.folderName} • ${taskInfo.specName}`;

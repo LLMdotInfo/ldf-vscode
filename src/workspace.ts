@@ -9,7 +9,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as yaml from 'js-yaml';
-import { glob } from 'glob';
+import * as vscode from 'vscode';
 
 // Workspace manifest filename
 export const WORKSPACE_MANIFEST = 'ldf-workspace.yaml';
@@ -318,6 +318,7 @@ export async function resolveProjects(
 
 /**
  * Discover projects using glob patterns.
+ * Uses VS Code's native findFiles API instead of external glob dependency.
  */
 async function discoverProjects(
     workspaceRoot: string,
@@ -327,14 +328,21 @@ async function discoverProjects(
 
     for (const pattern of config.patterns) {
         try {
-            const matches = await glob(pattern, {
-                cwd: workspaceRoot,
-                ignore: config.exclude.map(e => `**/${e}/**`)
-            });
+            // Use VS Code's native findFiles API (no external dependency)
+            const relPattern = new vscode.RelativePattern(workspaceRoot, pattern);
+            // Build exclude pattern: {**/node_modules/**,**/.venv/**,...}
+            const excludePattern = config.exclude.length > 0
+                ? `{${config.exclude.map(e => `**/${e}/**`).join(',')}}`
+                : undefined;
 
-            for (const match of matches) {
+            const uris = await vscode.workspace.findFiles(relPattern, excludePattern);
+
+            for (const uri of uris) {
+                // Get relative path from workspace root
+                const relativeFsPath = path.relative(workspaceRoot, uri.fsPath);
+
                 // Extract project path (parent of .ldf directory)
-                const configPath = path.dirname(match); // .ldf
+                const configPath = path.dirname(relativeFsPath); // .ldf
                 const projectPath = path.dirname(configPath); // project root
 
                 // Use relative path
@@ -347,7 +355,7 @@ async function discoverProjects(
                 });
             }
         } catch (error) {
-            console.error(`Failed to discover projects with pattern ${pattern}:`, error);
+            console.error(`LDF: Failed to discover projects with pattern ${pattern}:`, error);
         }
     }
 

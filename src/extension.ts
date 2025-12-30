@@ -15,13 +15,19 @@ import { SpecTreeProvider } from './specView';
 import { GuardrailTreeProvider } from './guardrailView';
 import { TaskTreeProvider } from './taskView';
 import { registerCommands } from './commands';
-import { findInPath, getVenvCandidates, getVenvExecutablePath } from './utils';
+import {
+    findInPath,
+    getVenvExecutablePath,
+    getCommonLdfPaths,
+    getPipxLdfPath,
+    getWorkspaceVenvCandidates,
+    verifyLdfExecutable,
+    LdfDetectionResult,
+} from './utils';
 import {
     detectWorkspaceContext,
-    findWorkspaceRoot,
     resolveProjects,
     WorkspaceManifest,
-    ProjectEntry,
     WORKSPACE_MANIFEST
 } from './workspace';
 
@@ -44,6 +50,18 @@ let activeProject: ActiveProject | null = null;
 // Workspace context
 let workspaceRoot: string | null = null;
 let workspaceManifest: WorkspaceManifest | null = null;
+
+// Resolved projects from ldf-workspace.yaml (includes subprojects)
+export interface ResolvedProject {
+    path: string;       // Full absolute path to the project
+    alias: string;      // Display name for the project
+    isSubproject: boolean;  // True if project is in a subfolder (not workspace root)
+}
+let resolvedProjects: ResolvedProject[] = [];
+
+// Track subproject watchers for cleanup on re-initialization
+// Without this, watchers accumulate when ldf-workspace.yaml changes
+let subprojectWatchers: vscode.Disposable[] = [];
 
 /**
  * Get the current active project.
@@ -81,6 +99,14 @@ export function getWorkspaceRoot(): string | null {
  */
 export function isInWorkspace(): boolean {
     return workspaceManifest !== null;
+}
+
+/**
+ * Get all resolved projects from ldf-workspace.yaml (includes subprojects).
+ * Returns empty array if not in a multi-project workspace.
+ */
+export function getResolvedProjects(): ResolvedProject[] {
+    return resolvedProjects;
 }
 
 /**
@@ -124,16 +150,109 @@ async function initializeWorkspaceContext(
 
         console.log(`LDF: Detected workspace "${wsInfo.manifest.name}" at ${wsInfo.root}`);
 
-        // Resolve all projects
+        // Resolve all projects (includes subprojects from ldf-workspace.yaml)
         const projects = await resolveProjects(wsInfo.manifest, wsInfo.root);
         console.log(`LDF: Found ${projects.length} projects in workspace`);
+
+        // Build resolved project list with full absolute paths
+        resolvedProjects = projects.map(p => ({
+            path: path.resolve(wsInfo.root, p.path),
+            alias: p.alias,
+            isSubproject: p.path !== '.'
+        }));
+
+        // Get all project paths for provider initialization
+        const projectPaths = resolvedProjects.map(p => p.path);
+
+        // Update tree providers with ALL resolved project paths (not just workspace folders)
+        // This enables monorepo support where projects can be in subfolders
+        if (specProvider && guardrailProvider && taskProvider) {
+            specProvider.setWorkspacePaths(projectPaths);
+            guardrailProvider.setWorkspacePaths(projectPaths);
+            taskProvider.setWorkspacePaths(projectPaths);
+            console.log(`LDF: Updated providers with ${projectPaths.length} project paths`);
+
+            // Refresh providers to load data from new paths
+            // setWorkspacePaths() only updates internal state; refresh() loads actual data
+            refreshAll();
+        }
+
+        // Create watchers for subproject paths (monorepo support)
+        // This MUST happen inside initializeWorkspaceContext() because resolvedProjects
+        // is populated asynchronously - if we created watchers in activate(), the array
+        // would be empty at that point due to async timing
+        const config = vscode.workspace.getConfiguration('ldf');
+        if (config.get('autoRefresh', true)) {
+            const specsDir = config.get('specsDirectory', '.ldf/specs');
+            const guardrailsFile = config.get('guardrailsFile', '.ldf/guardrails.yaml');
+
+            // Dispose existing subproject watchers to prevent accumulation
+            // This is critical: without cleanup, watchers accumulate on every
+            // ldf-workspace.yaml change, causing duplicate refresh calls
+            for (const watcher of subprojectWatchers) {
+                watcher.dispose();
+            }
+            subprojectWatchers = [];
+
+            for (const project of resolvedProjects) {
+                if (project.isSubproject) {
+                    const projectUri = vscode.Uri.file(project.path);
+
+                    // Watch subproject spec files
+                    const subSpecsWatcher = vscode.workspace.createFileSystemWatcher(
+                        new vscode.RelativePattern(projectUri, `${specsDir}/**/*.md`)
+                    );
+                    subSpecsWatcher.onDidChange(() => refreshAll());
+                    subSpecsWatcher.onDidCreate(() => refreshAll());
+                    subSpecsWatcher.onDidDelete(() => refreshAll());
+                    subprojectWatchers.push(subSpecsWatcher);
+                    context.subscriptions.push(subSpecsWatcher);
+
+                    // Watch subproject guardrails.yaml
+                    // Use optional chaining because watchers may fire before providers
+                    // are initialized (async timing during activation)
+                    const subGuardrailsWatcher = vscode.workspace.createFileSystemWatcher(
+                        new vscode.RelativePattern(projectUri, guardrailsFile)
+                    );
+                    subGuardrailsWatcher.onDidChange(() => guardrailProvider?.refresh());
+                    subGuardrailsWatcher.onDidCreate(() => guardrailProvider?.refresh());
+                    subGuardrailsWatcher.onDidDelete(() => guardrailProvider?.refresh());
+                    subprojectWatchers.push(subGuardrailsWatcher);
+                    context.subscriptions.push(subGuardrailsWatcher);
+
+                    console.log(`LDF: Added watchers for subproject: ${project.alias}`);
+                }
+            }
+        }
 
         // Set context for command visibility
         vscode.commands.executeCommand('setContext', 'ldf.hasWorkspace', true);
         vscode.commands.executeCommand('setContext', 'ldf.projectCount', projects.length);
     } else {
+        // Clear active project when leaving workspace mode
+        // Without this, status bar and tree views remain filtered to stale project
+        activeProject = null;
+
+        // Dispose subproject watchers when leaving workspace mode
+        // Without this, stale watchers keep firing on removed subproject paths
+        for (const watcher of subprojectWatchers) {
+            watcher.dispose();
+        }
+        subprojectWatchers = [];
+
+        // Reset provider paths to prevent stale subproject data
+        // Fall back to VS Code workspace folders (standard non-monorepo mode)
+        if (specProvider && guardrailProvider && taskProvider) {
+            const fallbackPaths = vscode.workspace.workspaceFolders?.map(f => f.uri.fsPath) || [];
+            specProvider.setWorkspacePaths(fallbackPaths);
+            guardrailProvider.setWorkspacePaths(fallbackPaths);
+            taskProvider.setWorkspacePaths(fallbackPaths);
+            refreshAll();
+        }
+
         workspaceRoot = null;
         workspaceManifest = null;
+        resolvedProjects = [];
         await context.workspaceState.update('ldf.workspaceRoot', undefined);
         await context.workspaceState.update('ldf.workspaceManifest', undefined);
         vscode.commands.executeCommand('setContext', 'ldf.hasWorkspace', false);
@@ -143,42 +262,125 @@ async function initializeWorkspaceContext(
 }
 
 /**
- * Try to find ldf executable in common locations.
- * Cross-platform: supports Windows, macOS, and Linux.
+ * Quick detection of LDF executable (no verification, just fs.existsSync).
+ * Used on activation for fast startup.
  */
-function detectLdfPath(workspacePath: string): string | null {
+function quickDetectLdf(workspacePath: string): LdfDetectionResult {
     const config = vscode.workspace.getConfiguration('ldf');
-    const configuredPath = config.get<string>('executablePath', 'ldf');
 
-    // If user has configured a custom path, verify it exists
-    if (configuredPath !== 'ldf') {
-        if (fs.existsSync(configuredPath)) {
-            return configuredPath;
+    // 1. Check global setting first (highest priority)
+    const globalPath = config.inspect<string>('executablePath')?.globalValue;
+    if (globalPath && globalPath !== 'ldf') {
+        if (fs.existsSync(globalPath)) {
+            return { found: true, path: globalPath, source: 'global-setting', verified: false };
         }
-        return null; // Custom path doesn't exist
+        // Global path is stale - will be handled by validateCachedPath
     }
 
-    // Check if ldf is in PATH (cross-platform, non-blocking)
+    // 2. Check workspace setting
+    const workspaceSettingPath = config.inspect<string>('executablePath')?.workspaceValue;
+    if (workspaceSettingPath && workspaceSettingPath !== 'ldf') {
+        if (fs.existsSync(workspaceSettingPath)) {
+            return { found: true, path: workspaceSettingPath, source: 'workspace-setting', verified: false };
+        }
+    }
+
+    // 3. Check system PATH
     const inPath = findInPath('ldf');
     if (inPath) {
-        return 'ldf'; // Use simple command name if in PATH
+        return { found: true, path: 'ldf', source: 'path', verified: false };
     }
 
-    // Check common virtualenv locations
-    const candidates = getVenvCandidates(workspacePath);
-    for (const candidate of candidates) {
+    // 4. Check current workspace venvs (expanded patterns)
+    const venvCandidates = getWorkspaceVenvCandidates(workspacePath);
+    for (const candidate of venvCandidates) {
         if (fs.existsSync(candidate)) {
-            return candidate;
+            return { found: true, path: candidate, source: 'workspace-venv', verified: false };
         }
     }
 
-    return null;
+    // 5. Check common installation locations
+    const commonPaths = getCommonLdfPaths();
+    for (const commonPath of commonPaths) {
+        if (fs.existsSync(commonPath)) {
+            return { found: true, path: commonPath, source: 'common-location', verified: false };
+        }
+    }
+
+    // 6. Check pipx installation
+    const pipxPath = getPipxLdfPath();
+    if (pipxPath) {
+        return { found: true, path: pipxPath, source: 'pipx', verified: false };
+    }
+
+    return { found: false, path: null, source: 'not-found', verified: false };
+}
+
+/**
+ * Full detection with verification (runs ldf --version).
+ * Used when user triggers auto-detect explicitly.
+ */
+async function fullDetectLdf(workspacePath: string): Promise<LdfDetectionResult> {
+    const detection = quickDetectLdf(workspacePath);
+
+    if (detection.found && detection.path) {
+        const verification = await verifyLdfExecutable(detection.path);
+        return {
+            ...detection,
+            verified: verification.valid,
+            error: verification.error,
+        };
+    }
+
+    return detection;
+}
+
+/**
+ * Validate cached path still exists. Clears stale paths with warning.
+ * Checks both workspace-level and global settings.
+ */
+async function validateCachedPath(): Promise<boolean> {
+    const config = vscode.workspace.getConfiguration('ldf');
+    const inspection = config.inspect<string>('executablePath');
+    let cleared = false;
+
+    // Check workspace-level setting first (higher priority)
+    const workspacePath = inspection?.workspaceValue;
+    if (workspacePath && workspacePath !== 'ldf' && !fs.existsSync(workspacePath)) {
+        await config.update('executablePath', undefined, vscode.ConfigurationTarget.Workspace);
+        console.log('LDF: Cleared stale workspace path:', workspacePath);
+        cleared = true;
+    }
+
+    // Check global setting
+    const globalPath = inspection?.globalValue;
+    if (globalPath && globalPath !== 'ldf' && !fs.existsSync(globalPath)) {
+        await config.update('executablePath', undefined, vscode.ConfigurationTarget.Global);
+        console.log('LDF: Cleared stale global path:', globalPath);
+        cleared = true;
+    }
+
+    if (cleared) {
+        vscode.window.showWarningMessage(
+            'Previously configured LDF path no longer exists. Running auto-detection...'
+        );
+        return false;
+    }
+
+    return true;
 }
 
 /**
  * Find all workspace folders that contain an LDF project (.ldf/config.yaml)
+ * In multi-project workspaces, uses resolved projects from ldf-workspace.yaml
  */
-function getLdfEnabledFolders(): string[] {
+export function getLdfEnabledFolders(): string[] {
+    // If we have resolved projects from ldf-workspace.yaml, use those
+    if (resolvedProjects.length > 0) {
+        return resolvedProjects.map(p => p.path);
+    }
+
+    // Fallback: scan workspace folders for .ldf/config.yaml
     const folders: string[] = [];
     for (const folder of vscode.workspace.workspaceFolders || []) {
         const configPath = path.join(folder.uri.fsPath, '.ldf', 'config.yaml');
@@ -190,55 +392,237 @@ function getLdfEnabledFolders(): string[] {
 }
 
 /**
- * Prompt user before auto-configuring ldf path
+ * Clear workspace-level executablePath setting if it exists.
+ * Called when saving globally to prevent the stale workspace setting from overriding.
  */
-async function promptAutoConfig(detectedPath: string): Promise<void> {
+async function clearConflictingWorkspaceSetting(): Promise<void> {
+    const config = vscode.workspace.getConfiguration('ldf');
+    const workspaceValue = config.inspect<string>('executablePath')?.workspaceValue;
+
+    if (workspaceValue && workspaceValue !== 'ldf') {
+        await config.update('executablePath', undefined, vscode.ConfigurationTarget.Workspace);
+        console.log('LDF: Cleared workspace-level executablePath to prevent conflict with global setting');
+    }
+}
+
+/**
+ * Prompt user when LDF is found - two-step "Use This / Change" flow.
+ */
+async function promptFoundLdf(detection: LdfDetectionResult): Promise<void> {
+    if (!detection.found || !detection.path) return;
+
+    const sourceLabel = {
+        'global-setting': 'configured globally',
+        'workspace-setting': 'configured for workspace',
+        'path': 'in PATH',
+        'workspace-venv': 'in workspace venv',
+        'common-location': 'in common location',
+        'pipx': 'via pipx',
+        'not-found': '',
+    }[detection.source];
+
+    // Step 1: "Use This" or "Change..."
     const action = await vscode.window.showInformationMessage(
-        `LDF found at: ${detectedPath}`,
-        'Use This Path',
-        'Keep Default',
+        `LDF found ${sourceLabel}: ${detection.path}`,
+        'Use This',
+        'Change...',
         "Don't Ask Again"
     );
 
     const config = vscode.workspace.getConfiguration('ldf');
 
-    if (action === 'Use This Path') {
-        await config.update('executablePath', detectedPath, vscode.ConfigurationTarget.Workspace);
-        vscode.window.showInformationMessage('LDF path configured');
-        console.log('LDF: User accepted auto-config:', detectedPath);
+    if (action === 'Use This') {
+        // Step 2: Save globally or to workspace?
+        const saveScope = await vscode.window.showInformationMessage(
+            'Save this LDF path for all workspaces or just this one?',
+            'Save Globally',
+            'Save to Workspace'
+        );
+
+        // User dismissed the dialog without making a choice - don't persist anything
+        if (!saveScope) {
+            console.log('LDF: User dismissed save scope dialog, path not saved');
+            return;
+        }
+
+        // Clear conflicting workspace setting when saving globally
+        if (saveScope === 'Save Globally') {
+            await clearConflictingWorkspaceSetting();
+        }
+
+        const target = saveScope === 'Save Globally'
+            ? vscode.ConfigurationTarget.Global
+            : vscode.ConfigurationTarget.Workspace;
+
+        await config.update('executablePath', detection.path, target);
+
+        // Update context to refresh views
+        vscode.commands.executeCommand('setContext', 'ldf.ldfNotFound', false);
+        refreshAll();
+
+        const scopeLabel = saveScope === 'Save Globally' ? 'globally' : 'for this workspace';
+        vscode.window.showInformationMessage(`LDF path saved ${scopeLabel}`);
+        console.log('LDF: User saved path:', detection.path, 'scope:', saveScope);
+    } else if (action === 'Change...') {
+        await browseLdfPath();
     } else if (action === "Don't Ask Again") {
         await config.update('skipAutoDetect', true, vscode.ConfigurationTarget.Global);
         console.log('LDF: User disabled auto-detect');
-    } else {
-        console.log('LDF: User declined auto-config, keeping default');
     }
 }
 
 /**
- * Show notification to help user configure ldf path
+ * Show improved onboarding prompt when LDF is not found.
  */
-async function promptLdfSetup(_workspacePath: string): Promise<void> {
+async function promptLdfOnboarding(workspacePath: string): Promise<void> {
     const result = await vscode.window.showWarningMessage(
-        'LDF: Could not find ldf executable.',
-        'Clone & Install',
-        'Open Settings',
+        'LDF CLI not found. Set up LDF to enable spec-driven development.',
+        'Auto-Detect',
+        'Browse...',
+        'Install LDF',
         'View Guide'
     );
 
-    if (result === 'Clone & Install') {
+    if (result === 'Auto-Detect') {
+        await runAutoDetectWithUI(workspacePath);
+    } else if (result === 'Browse...') {
+        await browseLdfPath();
+    } else if (result === 'Install LDF') {
         await cloneAndInstallLdf();
-    } else if (result === 'Open Settings') {
-        // Open settings directly to the ldf.executablePath setting
-        await vscode.commands.executeCommand(
-            'workbench.action.openSettings',
-            '@ext:llmdotinfo.ldf-vscode executablePath'
-        );
     } else if (result === 'View Guide') {
-        // Open the LDF installation documentation
         vscode.env.openExternal(
             vscode.Uri.parse('https://github.com/LLMdotInfo/ldf/blob/main/docs/installation/quick-install.md')
         );
     }
+}
+
+/**
+ * Clear the configured LDF path (both global and workspace).
+ * Exported for use by commands.ts
+ */
+export async function clearLdfPathConfig(): Promise<void> {
+    const config = vscode.workspace.getConfiguration('ldf');
+    await config.update('executablePath', undefined, vscode.ConfigurationTarget.Global);
+    await config.update('executablePath', undefined, vscode.ConfigurationTarget.Workspace);
+    vscode.commands.executeCommand('setContext', 'ldf.ldfNotFound', true);
+    vscode.window.showInformationMessage('LDF path cleared. Reload window to re-detect.');
+}
+
+/**
+ * Run full auto-detection with UI feedback.
+ * Exported for use by commands.ts
+ */
+export async function runAutoDetectWithUI(workspacePath: string): Promise<void> {
+    const detection = await fullDetectLdf(workspacePath);
+
+    if (detection.found && detection.path) {
+        if (detection.verified) {
+            await promptFoundLdf(detection);
+        } else {
+            // Found but verification failed
+            await handleVerificationFailure(detection.path, detection.error || 'Unknown error');
+        }
+    } else {
+        vscode.window.showWarningMessage(
+            'Could not find LDF installation. Use "Install LDF" or "Browse..." to configure.',
+            'Install LDF',
+            'Browse...'
+        ).then(action => {
+            if (action === 'Install LDF') {
+                cloneAndInstallLdf();
+            } else if (action === 'Browse...') {
+                browseLdfPath();
+            }
+        });
+    }
+}
+
+/**
+ * Let user browse for LDF executable with validation.
+ * Exported for use by commands.ts
+ */
+export async function browseLdfPath(): Promise<void> {
+    const isWindows = process.platform === 'win32';
+
+    const selected = await vscode.window.showOpenDialog({
+        canSelectFiles: true,
+        canSelectFolders: false,
+        canSelectMany: false,
+        openLabel: 'Select LDF Executable',
+        title: 'Locate the ldf executable',
+        filters: isWindows
+            ? { 'Executables': ['exe', 'cmd', 'bat'], 'All Files': ['*'] }
+            : undefined
+    });
+
+    if (!selected || selected.length === 0) return;
+
+    const selectedPath = selected[0].fsPath;
+
+    // Verify it works
+    vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: 'Verifying LDF executable...' },
+        async () => {
+            const verification = await verifyLdfExecutable(selectedPath);
+
+            if (verification.valid) {
+                const saveScope = await vscode.window.showInformationMessage(
+                    `LDF v${verification.version} verified successfully!`,
+                    'Save Globally',
+                    'Save to Workspace'
+                );
+
+                // User dismissed the dialog without making a choice - don't persist anything
+                if (!saveScope) {
+                    console.log('LDF: User dismissed save scope dialog, path not saved');
+                    return;
+                }
+
+                // Clear conflicting workspace setting when saving globally
+                if (saveScope === 'Save Globally') {
+                    await clearConflictingWorkspaceSetting();
+                }
+
+                const config = vscode.workspace.getConfiguration('ldf');
+                const target = saveScope === 'Save Globally'
+                    ? vscode.ConfigurationTarget.Global
+                    : vscode.ConfigurationTarget.Workspace;
+
+                await config.update('executablePath', selectedPath, target);
+
+                // Update context to refresh views
+                vscode.commands.executeCommand('setContext', 'ldf.ldfNotFound', false);
+                refreshAll();
+
+                vscode.window.showInformationMessage(`LDF path configured: ${selectedPath}`);
+            } else {
+                await handleVerificationFailure(selectedPath, verification.error || 'Unknown error');
+            }
+        }
+    );
+}
+
+/**
+ * Handle verification failure with detailed error and options.
+ */
+async function handleVerificationFailure(execPath: string, error: string): Promise<void> {
+    const action = await vscode.window.showWarningMessage(
+        `Found executable at ${execPath} but verification failed.`,
+        'Show Details',
+        'Browse...',
+        'Open Docs'
+    );
+
+    if (action === 'Show Details') {
+        vscode.window.showErrorMessage(`Verification error: ${error}`);
+    } else if (action === 'Browse...') {
+        await browseLdfPath();
+    } else if (action === 'Open Docs') {
+        vscode.env.openExternal(
+            vscode.Uri.parse('https://github.com/LLMdotInfo/ldf#troubleshooting')
+        );
+    }
+    // Don't save the broken path
 }
 
 /**
@@ -364,7 +748,8 @@ export function activate(context: vscode.ExtensionContext) {
         const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
         if (!workspaceFolder) {
             console.log('LDF: No workspace folder found');
-            vscode.window.showWarningMessage('LDF: No workspace folder open');
+            // Set context for viewsWelcome (no workspace)
+            vscode.commands.executeCommand('setContext', 'ldf.ldfNotFound', true);
             // Still register commands even without workspace so they don't error
             registerEmptyCommands(context);
             return;
@@ -382,25 +767,34 @@ export function activate(context: vscode.ExtensionContext) {
             console.error('LDF: Workspace context initialization failed:', err)
         );
 
-        // Auto-detect ldf and prompt user before configuring
-        const detectedPath = detectLdfPath(primaryFolder);
+        // Validate cached path (clears stale paths)
+        validateCachedPath().catch(err =>
+            console.error('LDF: Path validation failed:', err)
+        );
+
+        // Quick detection of LDF executable (fast, no verification)
+        const detection = quickDetectLdf(primaryFolder);
         const config = vscode.workspace.getConfiguration('ldf');
         const skipAutoDetect = config.get<boolean>('skipAutoDetect', false);
 
-        if (!skipAutoDetect && detectedPath && detectedPath !== 'ldf') {
-            const currentPath = config.get<string>('executablePath', 'ldf');
+        // Set context for viewsWelcome
+        vscode.commands.executeCommand('setContext', 'ldf.ldfNotFound', !detection.found);
 
-            // Only prompt if not already configured
-            if (currentPath === 'ldf') {
-                // Prompt user before modifying settings (fire-and-forget with error handling)
-                promptAutoConfig(detectedPath).catch(err =>
-                    console.error('LDF: Auto-config prompt failed:', err)
+        if (detection.found) {
+            console.log('LDF: Found at', detection.path, 'via', detection.source);
+
+            // If found from common-location or pipx and not already saved globally, prompt
+            if (!skipAutoDetect &&
+                (detection.source === 'common-location' || detection.source === 'pipx')) {
+                // Prompt user to save globally (fire-and-forget with error handling)
+                promptFoundLdf(detection).catch(err =>
+                    console.error('LDF: Found prompt failed:', err)
                 );
             }
-        } else if (!detectedPath && !skipAutoDetect) {
-            // ldf not found, prompt user (fire-and-forget with error handling)
-            promptLdfSetup(primaryFolder).catch(err =>
-                console.error('LDF: Setup prompt failed:', err)
+        } else if (!skipAutoDetect) {
+            // LDF not found, show onboarding prompt (fire-and-forget with error handling)
+            promptLdfOnboarding(primaryFolder).catch(err =>
+                console.error('LDF: Onboarding prompt failed:', err)
             );
         }
 
@@ -498,6 +892,7 @@ export function activate(context: vscode.ExtensionContext) {
                 workspaceWatcher.onDidDelete(refreshWorkspace);
                 context.subscriptions.push(workspaceWatcher);
             }
+
         }
 
         // Add disposables
@@ -525,7 +920,7 @@ function refreshAll() {
 
 function registerEmptyCommands(context: vscode.ExtensionContext) {
     // Register placeholder commands that show a message when no workspace is open
-    const commands = [
+    const workspaceRequiredCommands = [
         'ldf.refreshSpecs',
         'ldf.createSpec',
         'ldf.lintSpec',
@@ -543,13 +938,27 @@ function registerEmptyCommands(context: vscode.ExtensionContext) {
         'ldf.workspaceReport',
     ];
 
-    for (const cmd of commands) {
+    for (const cmd of workspaceRequiredCommands) {
         context.subscriptions.push(
             vscode.commands.registerCommand(cmd, () => {
                 vscode.window.showWarningMessage('LDF: Please open a workspace folder first');
             })
         );
     }
+
+    // Register commands that work without a workspace
+    context.subscriptions.push(
+        vscode.commands.registerCommand('ldf.browseLdfPath', () => browseLdfPath()),
+        vscode.commands.registerCommand('ldf.autoDetectLdf', () => {
+            vscode.window.showWarningMessage('LDF: Open a workspace folder to auto-detect LDF');
+        }),
+        vscode.commands.registerCommand('ldf.clearLdfPath', async () => {
+            const config = vscode.workspace.getConfiguration('ldf');
+            await config.update('executablePath', undefined, vscode.ConfigurationTarget.Global);
+            await config.update('executablePath', undefined, vscode.ConfigurationTarget.Workspace);
+            vscode.window.showInformationMessage('LDF path configuration cleared');
+        })
+    );
 
     // Register empty tree providers with helpful messages
     const emptyProvider = new EmptyTreeProvider('Open a folder to view specs');
@@ -567,9 +976,13 @@ function registerEmptyCommands(context: vscode.ExtensionContext) {
 }
 
 /**
- * Empty tree provider that shows a helpful message
+ * Empty tree provider that shows a helpful message.
+ * Properly implements TreeDataProvider with onDidChangeTreeData event.
  */
 class EmptyTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
+    private _onDidChangeTreeData = new vscode.EventEmitter<vscode.TreeItem | undefined | null | void>();
+    readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
+
     constructor(private message: string) {}
 
     getTreeItem(element: vscode.TreeItem): vscode.TreeItem {
@@ -580,6 +993,10 @@ class EmptyTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
         const item = new vscode.TreeItem(this.message);
         item.iconPath = new vscode.ThemeIcon('info');
         return [item];
+    }
+
+    refresh(): void {
+        this._onDidChangeTreeData.fire();
     }
 }
 

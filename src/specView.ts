@@ -86,16 +86,20 @@ export class SpecTreeProvider implements vscode.TreeDataProvider<SpecTreeItemTyp
             const wsContext = detectWorkspaceContext(p);
             if (wsContext) {
                 // Find matching project in manifest
-                resolveProjects(wsContext.manifest, wsContext.root).then(projects => {
-                    for (const project of projects) {
-                        const projectPath = path.resolve(wsContext.root, project.path);
-                        if (projectPath === p || p.startsWith(projectPath + path.sep)) {
-                            entry.projectAlias = getProjectDisplayName(project);
-                            this._onDidChangeTreeData.fire(); // Refresh to show alias
-                            break;
+                resolveProjects(wsContext.manifest, wsContext.root)
+                    .then(projects => {
+                        for (const project of projects) {
+                            const projectPath = path.resolve(wsContext.root, project.path);
+                            if (projectPath === p || p.startsWith(projectPath + path.sep)) {
+                                entry.projectAlias = getProjectDisplayName(project);
+                                this._onDidChangeTreeData.fire(); // Refresh to show alias
+                                break;
+                            }
                         }
-                    }
-                });
+                    })
+                    .catch(err => {
+                        console.error('LDF: Failed to resolve projects for spec view:', err);
+                    });
             }
             return entry;
         });

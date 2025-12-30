@@ -68,7 +68,11 @@ export class GuardrailTreeProvider implements vscode.TreeDataProvider<TreeItem> 
 
     constructor(workspacePath: string | string[]) {
         this.setWorkspacePaths(workspacePath);
-        this.loadGuardrails();
+        try {
+            this.loadGuardrails();
+        } catch (err) {
+            console.error('LDF: Failed to load guardrails:', err);
+        }
     }
 
     /**
@@ -752,14 +756,11 @@ export class GuardrailTreeProvider implements vscode.TreeDataProvider<TreeItem> 
 
         const workspaceCoverage = this.coveragePerWorkspace.get(workspacePath) || [];
 
-        // Group by severity
-        const items: GuardrailTreeItem[] = [];
-        for (const severity of ['critical', 'high', 'medium', 'low'] as const) {
-            const filtered = workspaceCoverage
-                .filter((c) => c.guardrail.severity === severity && c.guardrail.enabled)
-                .map((c) => new GuardrailTreeItem(c, workspacePath));
-            items.push(...filtered);
-        }
+        // Sort by guardrail ID (numeric order)
+        const items = workspaceCoverage
+            .filter((c) => c.guardrail.enabled)
+            .sort((a, b) => a.guardrail.id - b.guardrail.id)
+            .map((c) => new GuardrailTreeItem(c, workspacePath));
 
         return items;
     }
@@ -785,15 +786,19 @@ export class GuardrailTreeProvider implements vscode.TreeDataProvider<TreeItem> 
                 ];
             }
             // Show all specs with their status indicator
-            return coverage.specCoverage.map(
-                (sc) =>
-                    new GuardrailTreeItem(
-                        undefined,
-                        undefined,
-                        `${sc.specName} (${sc.status})`,
-                        'spec-reference'
-                    )
-            );
+            return coverage.specCoverage.map((sc) => {
+                // Warn if N/A status lacks justification
+                const needsJustification = sc.status === 'n/a' && !sc.justification;
+                const label = needsJustification
+                    ? `${sc.specName} (n/a ⚠️ needs justification)`
+                    : `${sc.specName} (${sc.status})`;
+                return new GuardrailTreeItem(
+                    undefined,
+                    undefined,
+                    label,
+                    'spec-reference'
+                );
+            });
         }
 
         // Fall back to flat coverage (backward compatibility)
@@ -810,19 +815,31 @@ export class GuardrailTreeProvider implements vscode.TreeDataProvider<TreeItem> 
         }
 
         // Show all specs with their status indicator
-        return coverage.specCoverage.map(
-            (sc) =>
-                new GuardrailTreeItem(
-                    undefined,
-                    undefined,
-                    `${sc.specName} (${sc.status})`,
-                    'spec-reference'
-                )
-        );
+        return coverage.specCoverage.map((sc) => {
+            // Warn if N/A status lacks justification
+            const needsJustification = sc.status === 'n/a' && !sc.justification;
+            const label = needsJustification
+                ? `${sc.specName} (n/a ⚠️ needs justification)`
+                : `${sc.specName} (${sc.status})`;
+            return new GuardrailTreeItem(
+                undefined,
+                undefined,
+                label,
+                'spec-reference'
+            );
+        });
     }
 
     getCoverage(): GuardrailCoverage[] {
         return this.coverage;
+    }
+
+    /**
+     * Get coverage for a specific workspace path.
+     * Used by showGuardrailDetails to show workspace-scoped coverage in multi-root workspaces.
+     */
+    getCoverageForWorkspace(workspacePath: string): GuardrailCoverage[] {
+        return this.coveragePerWorkspace.get(workspacePath) || [];
     }
 }
 
@@ -870,14 +887,14 @@ export class GuardrailTreeItem extends vscode.TreeItem {
             }
             this.tooltip = tooltipText;
 
-            // Use specCoverage.length to show all specs (not just DONE)
-            this.description = `${coverage.specCoverage.length} specs`;
+            // Show severity and spec count
+            this.description = `${coverage.guardrail.severity} • ${coverage.specCoverage.length} specs`;
             this.iconPath = GuardrailTreeItem.getStatusIcon(coverage);
-            // Pass guardrail ID explicitly in command arguments for reliable invocation
+            // Pass guardrail ID and workspace path for reliable invocation in multi-root workspaces
             this.command = {
                 command: 'ldf.showGuardrailDetails',
                 title: 'Show Guardrail Details',
-                arguments: [coverage.guardrail.id]
+                arguments: [{ guardrailId: coverage.guardrail.id, workspacePath: workspacePath }]
             };
         } else {
             super(label || '', vscode.TreeItemCollapsibleState.None);

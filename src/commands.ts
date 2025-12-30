@@ -22,7 +22,11 @@ import {
     getWorkspaceManifest,
     getWorkspaceRoot,
     isInWorkspace,
-    ActiveProject
+    getLdfEnabledFolders,
+    ActiveProject,
+    browseLdfPath,
+    runAutoDetectWithUI,
+    clearLdfPathConfig
 } from './extension';
 import { resolveProjects, isLdfProject } from './workspace';
 
@@ -204,10 +208,19 @@ export function registerCommands(
         )
     );
 
-    // Lint all specs
+    // Lint all specs (supports multi-root workspaces)
     context.subscriptions.push(
         vscode.commands.registerCommand('ldf.lintAllSpecs', async () => {
-            await runLint(workspacePath);
+            const ldfFolders = getLdfEnabledFolders();
+            if (ldfFolders.length === 0) {
+                // Fallback to default workspace if no LDF projects found
+                await runLint(workspacePath);
+            } else {
+                // Lint all LDF projects in the workspace
+                for (const folder of ldfFolders) {
+                    await runLint(folder);
+                }
+            }
         })
     );
 
@@ -297,13 +310,24 @@ export function registerCommands(
 
                 if (!specName) return;
 
+                // Generate QuickPick from VALID_AUDIT_TYPES for consistency
+                const auditTypeLabels: Record<string, string> = {
+                    'spec-review': 'Spec Review',
+                    'code-audit': 'Code Audit',
+                    'security': 'Security Check',
+                    'security-check': 'Security Check (verbose)',
+                    'pre-launch': 'Pre-Launch Review',
+                    'gap-analysis': 'Gap Analysis',
+                    'edge-cases': 'Edge Cases',
+                    'architecture': 'Architecture Review',
+                    'full': 'Full Audit',
+                };
+
                 const auditType = await vscode.window.showQuickPick(
-                    [
-                        { label: 'Spec Review', value: 'spec-review' },
-                        { label: 'Security Check', value: 'security-check' },
-                        { label: 'Gap Analysis', value: 'gap-analysis' },
-                        { label: 'Edge Cases', value: 'edge-cases' },
-                    ],
+                    VALID_AUDIT_TYPES.map(type => ({
+                        label: auditTypeLabels[type] || type,
+                        value: type
+                    })),
                     { placeHolder: 'Select audit type' }
                 );
 
@@ -315,20 +339,26 @@ export function registerCommands(
     );
 
     // Show guardrail details
-    // Handler accepts either a GuardrailTreeItem (from context menu) or number (from code)
+    // Handler accepts: GuardrailTreeItem (from context menu), number (legacy), or {guardrailId, workspacePath} (from click)
     context.subscriptions.push(
         vscode.commands.registerCommand(
             'ldf.showGuardrailDetails',
-            async (itemOrId?: GuardrailTreeItem | number) => {
-                // Extract guardrail ID from tree item or use directly
+            async (itemOrId?: GuardrailTreeItem | number | { guardrailId: number; workspacePath?: string }) => {
+                // Extract guardrail ID and workspace path from tree item, object, or use ID directly
                 let guardrailId: number | undefined;
+                let workspacePath: string | undefined;
+
                 if (typeof itemOrId === 'number') {
                     guardrailId = itemOrId;
                 } else if (itemOrId?.guardrailId) {
                     guardrailId = itemOrId.guardrailId;
+                    workspacePath = itemOrId.workspacePath;  // Extract workspace context for multi-root
                 }
 
-                const coverage = guardrailProvider.getCoverage();
+                // Use workspace-specific coverage if available, otherwise fall back to global
+                const coverage = workspacePath
+                    ? guardrailProvider.getCoverageForWorkspace(workspacePath)
+                    : guardrailProvider.getCoverage();
                 const guardrail = coverage.find((c) => c.guardrail.id === guardrailId);
 
                 if (!guardrail) {
@@ -362,6 +392,12 @@ export function registerCommands(
             'ldf.markTaskComplete',
             async (item?: TaskTreeItem) => {
                 if (!item?.taskId) return;
+
+                // Defensive check - task should already be hidden from completed items via contextValue
+                const task = taskProvider.getTask(item.taskId);
+                if (task?.status === 'complete') {
+                    return;  // Silent success - task already complete
+                }
 
                 const success = await taskProvider.markTaskComplete(item.taskId);
                 if (success) {
@@ -412,31 +448,35 @@ export function registerCommands(
             // Detect CLI version (with fallback)
             const frameworkVersion = await getLdfVersion();
 
-            // Create config.yaml with schema matching LDF CLI expectations
+            // Create config.yaml with schema matching LDF CLI v1.1 expectations
             const projectName = path.basename(workspacePath);
             const timestamp = new Date().toISOString();
-            const configYaml = `# LDF Configuration
-version: "1.0"
-framework_version: "${frameworkVersion}"
-framework_updated: "${timestamp}"
+            const configYaml = `# LDF Configuration (v1.1 schema)
+_schema_version: "1.1"
 
 project:
   name: "${projectName}"
+  version: "1.0.0"
   specs_dir: .ldf/specs
 
-guardrails:
+ldf:
+  version: "${frameworkVersion}"
   preset: custom
-  overrides: {}
+  updated: "${timestamp}"
 
 question_packs:
-  - security
-  - testing
-  - api-design
-  - data-model
+  core:
+    - security
+    - testing
+    - api-design
+    - data-model
+  optional: []
 
 mcp_servers:
-  - spec_inspector
-  - coverage_reporter
+  enabled: true
+  servers:
+    - spec_inspector
+    - coverage_reporter
 
 lint:
   strict: false
@@ -554,12 +594,8 @@ lint:
                 name: selected.project.alias
             };
 
+            // setActiveProject updates status bar and refreshes all tree views
             setActiveProject(newActiveProject);
-
-            // Refresh tree views to reflect the change
-            specProvider.refresh();
-            guardrailProvider.refresh();
-            taskProvider.refresh();
 
             vscode.window.showInformationMessage(`LDF: Switched to project '${selected.project.alias}'`);
         })
@@ -666,6 +702,23 @@ lint:
             }
             outputChannel.appendLine('═══════════════════════════════════════════════════');
         })
+    );
+
+    // Browse for LDF executable - calls the real implementation from extension.ts
+    context.subscriptions.push(
+        vscode.commands.registerCommand('ldf.browseLdfPath', () => browseLdfPath())
+    );
+
+    // Auto-detect LDF installation - calls the real implementation from extension.ts
+    context.subscriptions.push(
+        vscode.commands.registerCommand('ldf.autoDetectLdf', async () => {
+            await runAutoDetectWithUI(workspacePath);
+        })
+    );
+
+    // Clear configured LDF path - calls the real implementation from extension.ts
+    context.subscriptions.push(
+        vscode.commands.registerCommand('ldf.clearLdfPath', () => clearLdfPathConfig())
     );
 }
 
@@ -834,7 +887,21 @@ async function runLint(workspacePath: string, specName?: string): Promise<void> 
     }
 
     // Build command arguments
-    const args = specName ? ['lint', specName] : ['lint', '--all'];
+    const args: string[] = [];
+
+    // In workspace mode with an active project, pass --project flag
+    const activeProject = getActiveProject();
+    if (isInWorkspace() && activeProject) {
+        args.push('--project', activeProject.alias);
+    }
+
+    // Add lint command and args
+    args.push('lint');
+    if (specName) {
+        args.push(specName);
+    } else {
+        args.push('--all');
+    }
 
     if (outputMode === 'outputPanel') {
         // Output panel mode: capture output to LDF channel
@@ -869,7 +936,16 @@ async function runAudit(
     const outputMode = config.get<string>('outputMode', 'terminal');
 
     // Build command arguments
-    const args = ['audit', '--type', auditType, '--spec', specName];
+    const args: string[] = [];
+
+    // In workspace mode with an active project, pass --project flag
+    const activeProject = getActiveProject();
+    if (isInWorkspace() && activeProject) {
+        args.push('--project', activeProject.alias);
+    }
+
+    // Add audit command and args
+    args.push('audit', '--type', auditType, '--spec', specName);
 
     if (outputMode === 'outputPanel') {
         // Output panel mode: capture output to LDF channel

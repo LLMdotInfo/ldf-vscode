@@ -16,8 +16,18 @@ import { promisify } from 'util';
  */
 export const execFileAsync = promisify(execFile);
 
-// Valid audit types - allowlist for security
-export const VALID_AUDIT_TYPES = ['spec-review', 'security-check', 'gap-analysis', 'edge-cases'];
+// Valid audit types - allowlist for security (must match LDF CLI audit.py)
+export const VALID_AUDIT_TYPES = [
+    'spec-review',
+    'code-audit',
+    'security',
+    'security-check',
+    'pre-launch',
+    'gap-analysis',
+    'edge-cases',
+    'architecture',
+    'full',
+];
 
 /**
  * Shell-escape a string for safe use in terminal commands.
@@ -135,6 +145,230 @@ export function venvExecutableExists(
 ): boolean {
     const execPath = getVenvExecutablePath(basePath, name, venvDir);
     return fs.existsSync(execPath);
+}
+
+// ============================================================================
+// LDF Detection Functions
+// ============================================================================
+
+/**
+ * Result of LDF executable detection.
+ */
+export interface LdfDetectionResult {
+    found: boolean;
+    path: string | null;
+    source: 'global-setting' | 'workspace-setting' | 'path' |
+            'workspace-venv' | 'common-location' | 'pipx' | 'not-found';
+    verified: boolean;
+    error?: string;
+}
+
+/**
+ * Result of LDF executable verification.
+ */
+export interface LdfVerificationResult {
+    valid: boolean;
+    version?: string;
+    error?: string;
+}
+
+/**
+ * Get the user's home directory (cross-platform).
+ */
+export function getHomeDir(): string {
+    return process.env.HOME || process.env.USERPROFILE || '';
+}
+
+/**
+ * Get common LDF installation paths to check.
+ * Cross-platform: returns appropriate paths for Windows, macOS, and Linux.
+ */
+export function getCommonLdfPaths(): string[] {
+    const isWindows = process.platform === 'win32';
+    const home = getHomeDir();
+
+    if (!home) return [];
+
+    const paths: string[] = [];
+
+    if (isWindows) {
+        const localAppData = process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local');
+        const appData = process.env.APPDATA || path.join(home, 'AppData', 'Roaming');
+
+        // Windows common locations
+        paths.push(
+            // User venv installations
+            path.join(home, 'ldf', '.venv', 'Scripts', 'ldf.exe'),
+            path.join(home, 'dev', 'ldf', '.venv', 'Scripts', 'ldf.exe'),
+            // Program installations
+            path.join(localAppData, 'Programs', 'LDF', 'ldf.exe'),
+            path.join(home, '.local', 'bin', 'ldf.exe'),
+            // Scoop
+            path.join(home, 'scoop', 'shims', 'ldf.exe'),
+            // Chocolatey
+            'C:\\ProgramData\\chocolatey\\bin\\ldf.exe',
+        );
+
+        // Python user scripts (glob pattern approximation)
+        const pythonVersions = ['Python39', 'Python310', 'Python311', 'Python312', 'Python313', 'Python314'];
+        for (const pyVer of pythonVersions) {
+            paths.push(path.join(appData, 'Python', pyVer, 'Scripts', 'ldf.exe'));
+        }
+    } else {
+        // macOS/Linux common locations
+        paths.push(
+            // User venv installations
+            path.join(home, 'ldf', '.venv', 'bin', 'ldf'),
+            path.join(home, 'dev', 'ldf', '.venv', 'bin', 'ldf'),
+            // User local bin
+            path.join(home, '.local', 'bin', 'ldf'),
+            // System locations
+            '/usr/local/bin/ldf',
+            '/usr/bin/ldf',
+        );
+
+        // macOS Homebrew (both Intel and Apple Silicon)
+        if (process.platform === 'darwin') {
+            paths.push(
+                '/opt/homebrew/bin/ldf',  // Apple Silicon
+                '/usr/local/bin/ldf',      // Intel (already added but explicit)
+            );
+        }
+    }
+
+    return paths;
+}
+
+/**
+ * Get pipx LDF installation path if it exists.
+ * Cross-platform support.
+ */
+export function getPipxLdfPath(): string | null {
+    const isWindows = process.platform === 'win32';
+    const home = getHomeDir();
+
+    if (!home) return null;
+
+    // Check both possible pipx venv locations
+    const pipxPaths = isWindows
+        ? [
+            path.join(home, '.local', 'pipx', 'venvs', 'llm-ldf', 'Scripts', 'ldf.exe'),
+            path.join(home, '.local', 'pipx', 'venvs', 'ldf', 'Scripts', 'ldf.exe'),
+        ]
+        : [
+            path.join(home, '.local', 'pipx', 'venvs', 'llm-ldf', 'bin', 'ldf'),
+            path.join(home, '.local', 'pipx', 'venvs', 'ldf', 'bin', 'ldf'),
+        ];
+
+    for (const pipxPath of pipxPaths) {
+        if (fs.existsSync(pipxPath)) {
+            return pipxPath;
+        }
+    }
+
+    return null;
+}
+
+/**
+ * Get expanded workspace venv candidates.
+ * Checks more patterns than the basic getVenvCandidates.
+ */
+export function getWorkspaceVenvCandidates(workspacePath: string): string[] {
+    const isWindows = process.platform === 'win32';
+    const venvDirs = ['.venv', 'venv', '.env', 'env', '.ldf/venv'];
+    const candidates: string[] = [];
+
+    for (const venv of venvDirs) {
+        if (isWindows) {
+            candidates.push(path.join(workspacePath, venv, 'Scripts', 'ldf.exe'));
+            candidates.push(path.join(workspacePath, venv, 'Scripts', 'ldf.cmd'));
+        } else {
+            candidates.push(path.join(workspacePath, venv, 'bin', 'ldf'));
+        }
+    }
+
+    // Check .tox environments (common in Python projects)
+    const toxDir = path.join(workspacePath, '.tox');
+    if (fs.existsSync(toxDir)) {
+        try {
+            const toxEnvs = fs.readdirSync(toxDir, { withFileTypes: true })
+                .filter(d => d.isDirectory())
+                .map(d => d.name);
+
+            for (const toxEnv of toxEnvs) {
+                if (isWindows) {
+                    candidates.push(path.join(toxDir, toxEnv, 'Scripts', 'ldf.exe'));
+                } else {
+                    candidates.push(path.join(toxDir, toxEnv, 'bin', 'ldf'));
+                }
+            }
+        } catch {
+            // Ignore read errors
+        }
+    }
+
+    return candidates;
+}
+
+/**
+ * Verify that an LDF executable works by running --version.
+ * Non-blocking with configurable timeout.
+ *
+ * @param execPath - Path to the LDF executable
+ * @param timeoutMs - Timeout in milliseconds (default: 5000)
+ * @returns Verification result with version or error
+ */
+export async function verifyLdfExecutable(
+    execPath: string,
+    timeoutMs: number = 5000
+): Promise<LdfVerificationResult> {
+    try {
+        const { stdout, stderr } = await execFileAsync(
+            execPath,
+            ['--version'],
+            { timeout: timeoutMs }
+        );
+
+        // Check that output contains a version number (e.g., "ldf, version 1.1.0")
+        const versionMatch = stdout.match(/(\d+\.\d+\.\d+)/);
+        if (versionMatch) {
+            return { valid: true, version: versionMatch[1] };
+        }
+
+        // Version command ran but no version found
+        return {
+            valid: false,
+            error: stderr || 'No version number found in output'
+        };
+    } catch (err: unknown) {
+        const error = err as { killed?: boolean; code?: string; message?: string };
+
+        if (error.killed) {
+            return {
+                valid: false,
+                error: 'Executable timed out (may be hanging or prompting for input)'
+            };
+        }
+
+        if (error.code === 'ENOENT') {
+            return {
+                valid: false,
+                error: 'Executable not found at path'
+            };
+        }
+
+        if (error.code === 'EACCES') {
+            return {
+                valid: false,
+                error: 'Permission denied - file may not be executable'
+            };
+        }
+
+        return {
+            valid: false,
+            error: error.message || String(err)
+        };
+    }
 }
 
 /**
