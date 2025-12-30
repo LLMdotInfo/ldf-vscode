@@ -5,6 +5,17 @@ All notable changes to the LDF VS Code Extension will be documented in this file
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2025-12-29
+
+### Added
+- **Node.js 22 Support** - Added Node.js 22 to CI test matrix
+
+### Changed
+- **TypeScript 5.5** - Updated TypeScript from ^5.0.0 to ^5.5.0 for improved type checking and ES2023 features
+- Version number aligned with LDF CLI v1.2.0
+
+---
+
 ## [1.1.1] - 2025-12-29
 
 ### Fixed
