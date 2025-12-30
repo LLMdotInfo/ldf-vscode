@@ -5,6 +5,24 @@ All notable changes to the LDF VS Code Extension will be documented in this file
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2025-12-29
+
+### Fixed
+
+#### Workspace Integration
+- **`--project` flag passed to CLI** - When in workspace mode, extension now passes `--project <alias>` to `ldf lint` and `ldf audit` commands for correct project targeting
+
+#### Audit Types
+- **Extended audit type allowlist** - Added missing audit types: `code-audit`, `security-check`, `pre-launch`, `full` (aligns with LDF CLI)
+
+#### N/A Status Display
+- **Warning for missing justification** - Guardrail coverage view now shows a warning indicator (⚠️) when N/A status lacks justification
+
+### Changed
+- Version number updated to align with LDF CLI v1.1.1
+
+---
+
 ## [1.1.0] - 2025-12-27
 
 ### Added

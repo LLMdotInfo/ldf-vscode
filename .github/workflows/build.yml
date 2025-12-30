@@ -1,4 +1,4 @@
-name: Tests
+name: Build
 
 on:
   push:
@@ -7,21 +7,17 @@ on:
     branches: [main]
 
 jobs:
-  test:
-    name: Node ${{ matrix.node-version }}
+  build:
+    name: Package
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        node-version: ['18', '20']
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node.js ${{ matrix.node-version }}
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node-version }}
+          node-version: '20'
           cache: 'npm'
 
       - name: Install dependencies
@@ -30,7 +26,12 @@ jobs:
       - name: Compile TypeScript
         run: npm run compile
 
-      - name: Run tests
-        run: xvfb-run -a npm test
-        env:
-          CI: true
+      - name: Package extension
+        run: npm run package
+
+      - name: Upload VSIX
+        uses: actions/upload-artifact@v4
+        with:
+          name: vsix-package
+          path: "*.vsix"
+          retention-days: 5

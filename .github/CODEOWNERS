@@ -1,0 +1,15 @@
+# ldf-vscode CODEOWNERS
+# See: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default owners for everything in the repo
+* @llmdotinfo
+
+# Source code
+/src/ @llmdotinfo
+
+# Extension manifest and configuration
+/package.json @llmdotinfo
+/tsconfig.json @llmdotinfo
+
+# CI/CD configuration
+/.github/ @llmdotinfo

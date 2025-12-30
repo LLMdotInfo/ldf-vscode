@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security Vulnerability
+    url: https://github.com/LLMdotInfo/ldf-vscode/security/advisories/new
+    about: Report a security vulnerability privately using GitHub Security Advisories
+  - name: GitHub Discussions
+    url: https://github.com/LLMdotInfo/ldf-vscode/discussions
+    about: Ask questions, share ideas, or show off your work in our community discussions
+  - name: LDF CLI Issues
+    url: https://github.com/LLMdotInfo/ldf/issues
+    about: Report issues with the LDF CLI tool (not the VS Code extension)

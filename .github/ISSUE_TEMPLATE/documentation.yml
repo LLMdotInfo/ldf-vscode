@@ -1,0 +1,59 @@
+name: Documentation Issue
+description: Report an issue with the documentation
+title: "[Docs]: "
+labels: ["documentation", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Help us improve our documentation! Please describe the issue below.
+
+  - type: dropdown
+    id: issue-type
+    attributes:
+      label: Issue Type
+      description: What kind of documentation issue is this?
+      options:
+        - Missing documentation
+        - Incorrect information
+        - Unclear or confusing
+        - Outdated content
+        - Typo or grammar
+    validations:
+      required: true
+
+  - type: input
+    id: location
+    attributes:
+      label: Location
+      description: File path, URL, or section where the issue is
+      placeholder: "README.md or https://github.com/LLMdotInfo/ldf-vscode/blob/main/CHANGELOG.md"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: Describe what's wrong or missing
+      placeholder: The section about settings doesn't explain...
+    validations:
+      required: true
+
+  - type: textarea
+    id: suggested-fix
+    attributes:
+      label: Suggested Fix
+      description: If you have a suggestion for how to fix it, please share
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Code of Conduct
+      options:
+        - label: I have searched existing issues and this is not a duplicate
+          required: true
+        - label: I agree to follow the project's Code of Conduct
+          required: true

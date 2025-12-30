@@ -4,8 +4,10 @@
 .github/**
 .ldf/**
 src/**
+src/test/**
 out/test/**
 node_modules/**
+tsconfig.test.json
 *.vsix
 .gitignore
 .yarnrc

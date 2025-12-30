@@ -1,0 +1,81 @@
+name: Performance Issue
+description: Report a performance problem with the LDF VS Code Extension
+title: "[Performance]: "
+labels: ["performance", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Help us identify performance bottlenecks! Please provide as much detail as possible.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Performance Issue Description
+      description: What operation is slow or causes high resource usage?
+      placeholder: The Spec Tree View takes a long time to load when...
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: How can we reproduce this performance issue?
+      placeholder: |
+        1. Open a workspace with X specs
+        2. Wait for extension to activate
+        3. Observe slow performance
+    validations:
+      required: true
+
+  - type: input
+    id: expected-performance
+    attributes:
+      label: Expected Performance
+      description: What timing or behavior do you expect?
+      placeholder: "Tree view should load in under 2 seconds"
+    validations:
+      required: true
+
+  - type: input
+    id: actual-performance
+    attributes:
+      label: Actual Performance
+      description: What timing or behavior do you observe?
+      placeholder: "Takes over 30 seconds to load"
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Hardware specs, OS, project size
+      placeholder: |
+        - Machine: MacBook Pro M1, 16GB RAM
+        - OS: macOS 14.0
+        - VS Code: 1.85.0
+        - Extension: 1.1.1
+        - Project size: 50 specs, 200 tasks
+    validations:
+      required: true
+
+  - type: textarea
+    id: profiling
+    attributes:
+      label: Extension Host Logs / Profiling
+      description: Any relevant logs from Developer Tools or VS Code's built-in profiler
+      render: shell
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Code of Conduct
+      options:
+        - label: I have searched existing issues and this is not a duplicate
+          required: true
+        - label: I agree to follow the project's Code of Conduct
+          required: true
