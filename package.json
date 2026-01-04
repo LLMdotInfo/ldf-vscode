@@ -200,6 +200,30 @@
         "title": "Clear Configured LDF Path",
         "icon": "$(clear-all)",
         "category": "LDF"
+      },
+      {
+        "command": "ldf.runDoctor",
+        "title": "Run Diagnostics (Doctor)",
+        "icon": "$(heart)",
+        "category": "LDF"
+      },
+      {
+        "command": "ldf.showProviders",
+        "title": "Show AI Providers",
+        "icon": "$(cloud)",
+        "category": "LDF"
+      },
+      {
+        "command": "ldf.enterpriseSync",
+        "title": "Sync Enterprise Config",
+        "icon": "$(cloud-download)",
+        "category": "LDF"
+      },
+      {
+        "command": "ldf.crewDispatch",
+        "title": "Dispatch Crew Member",
+        "icon": "$(rocket)",
+        "category": "LDF"
       }
     ],
     "menus": {
@@ -283,6 +307,22 @@
         },
         {
           "command": "ldf.workspaceReport",
+          "when": "workspaceFolderCount > 0"
+        },
+        {
+          "command": "ldf.runDoctor",
+          "when": "workspaceFolderCount > 0"
+        },
+        {
+          "command": "ldf.showProviders",
+          "when": "workspaceFolderCount > 0"
+        },
+        {
+          "command": "ldf.enterpriseSync",
+          "when": "workspaceFolderCount > 0"
+        },
+        {
+          "command": "ldf.crewDispatch",
           "when": "workspaceFolderCount > 0"
         }
       ]

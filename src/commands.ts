@@ -720,6 +720,183 @@ lint:
     context.subscriptions.push(
         vscode.commands.registerCommand('ldf.clearLdfPath', () => clearLdfPathConfig())
     );
+
+    // Run diagnostics (doctor) - checks LDF installation health
+    context.subscriptions.push(
+        vscode.commands.registerCommand('ldf.runDoctor', async () => {
+            const ldf = getLdfCommand();
+            const config = vscode.workspace.getConfiguration('ldf');
+            const outputMode = config.get<string>('outputMode', 'terminal');
+
+            if (outputMode === 'outputPanel') {
+                await runCommandToOutputChannel(ldf, ['doctor'], workspacePath, 'Doctor');
+            } else {
+                await runCommandInTerminal(ldf, ['doctor'], workspacePath, 'LDF Doctor');
+            }
+        })
+    );
+
+    // Show AI providers - list configured providers and their status
+    context.subscriptions.push(
+        vscode.commands.registerCommand('ldf.showProviders', async () => {
+            const ldf = getLdfCommand();
+            const config = vscode.workspace.getConfiguration('ldf');
+            const outputMode = config.get<string>('outputMode', 'terminal');
+
+            // Allow choosing between list, check, and models
+            const action = await vscode.window.showQuickPick([
+                { label: '$(list-unordered) List Providers', value: 'list', description: 'Show configured providers' },
+                { label: '$(check) Check Status', value: 'check', description: 'Verify provider connectivity' },
+                { label: '$(symbol-class) Show Models', value: 'models', description: 'List available models' }
+            ], {
+                placeHolder: 'Select provider action'
+            });
+
+            if (!action) return;
+
+            const args = ['providers', action.value];
+
+            if (outputMode === 'outputPanel') {
+                await runCommandToOutputChannel(ldf, args, workspacePath, `Providers ${action.value}`);
+            } else {
+                await runCommandInTerminal(ldf, args, workspacePath, `LDF Providers ${action.label.replace(/\$\([^)]+\)\s*/, '')}`);
+            }
+        })
+    );
+
+    // Sync enterprise config - pull/push enterprise configuration
+    context.subscriptions.push(
+        vscode.commands.registerCommand('ldf.enterpriseSync', async () => {
+            const ldf = getLdfCommand();
+            const config = vscode.workspace.getConfiguration('ldf');
+            const outputMode = config.get<string>('outputMode', 'terminal');
+
+            // Allow choosing between sync, init, and config
+            const action = await vscode.window.showQuickPick([
+                { label: '$(cloud-download) Sync Config', value: 'sync', description: 'Sync with enterprise server' },
+                { label: '$(gear) Show Config', value: 'config', description: 'Display enterprise configuration' },
+                { label: '$(add) Initialize', value: 'init', description: 'Initialize enterprise features' }
+            ], {
+                placeHolder: 'Select enterprise action'
+            });
+
+            if (!action) return;
+
+            const args = ['enterprise', action.value];
+
+            if (outputMode === 'outputPanel') {
+                await runCommandToOutputChannel(ldf, args, workspacePath, `Enterprise ${action.value}`);
+            } else {
+                await runCommandInTerminal(ldf, args, workspacePath, `LDF Enterprise ${action.label.replace(/\$\([^)]+\)\s*/, '')}`);
+            }
+        })
+    );
+
+    // Dispatch crew member - run AI crew member on a task
+    context.subscriptions.push(
+        vscode.commands.registerCommand('ldf.crewDispatch', async () => {
+            const ldf = getLdfCommand();
+            const config = vscode.workspace.getConfiguration('ldf');
+            const outputMode = config.get<string>('outputMode', 'terminal');
+
+            // Get list of specs for context
+            const specs = specProvider.getSpecs();
+            const isMultiRoot = specs.some(s => s.folderName);
+
+            // First, select crew member
+            const crewMembers = [
+                { label: '$(person) Architect', value: 'architect', description: 'Design and structure solutions' },
+                { label: '$(code) Implementer', value: 'implementer', description: 'Write code implementations' },
+                { label: '$(beaker) Tester', value: 'tester', description: 'Write and validate tests' },
+                { label: '$(book) Documenter', value: 'documenter', description: 'Create documentation' },
+                { label: '$(search) Reviewer', value: 'reviewer', description: 'Review code and specs' }
+            ];
+
+            const member = await vscode.window.showQuickPick(crewMembers, {
+                placeHolder: 'Select crew member to dispatch'
+            });
+
+            if (!member) return;
+
+            // Then, optionally select a spec to work on
+            let selectedSpec: { name: string; folderPath?: string } | undefined;
+
+            if (specs.length > 0) {
+                const quickPickItems = [
+                    { label: '$(folder) No spec (general)', description: 'Run without spec context', spec: undefined },
+                    ...specs.map((s) => ({
+                        label: s.name,
+                        description: isMultiRoot ? s.folderName : undefined,
+                        spec: s
+                    }))
+                ];
+
+                const selected = await vscode.window.showQuickPick(quickPickItems, {
+                    placeHolder: 'Select spec to work on (optional)'
+                });
+
+                if (!selected) return;
+                selectedSpec = selected.spec;
+            }
+
+            // Build command args
+            const args: string[] = [];
+
+            // Add project flag if in workspace mode
+            const activeProject = getActiveProject();
+            if (isInWorkspace() && activeProject) {
+                args.push('--project', activeProject.alias);
+            }
+
+            args.push('crew', 'dispatch', member.value);
+
+            if (selectedSpec) {
+                args.push('--spec', selectedSpec.name);
+            }
+
+            // Determine working directory
+            const targetPath = selectedSpec?.folderPath || workspacePath;
+
+            if (outputMode === 'outputPanel') {
+                await runCommandToOutputChannel(ldf, args, targetPath, `Crew ${member.value}`);
+            } else {
+                await runCommandInTerminal(ldf, args, targetPath, `LDF Crew: ${member.label.replace(/\$\([^)]+\)\s*/, '')}`);
+            }
+        })
+    );
+
+    // Setup LDF (clone & install) - guided setup for new installations
+    context.subscriptions.push(
+        vscode.commands.registerCommand('ldf.setupLdf', async () => {
+            const choice = await vscode.window.showQuickPick([
+                { label: '$(cloud-download) Install via npm', value: 'npm', description: 'npm install -g @ldf/cli' },
+                { label: '$(terminal) Open Installation Guide', value: 'guide', description: 'View setup instructions' }
+            ], {
+                placeHolder: 'How would you like to install LDF?'
+            });
+
+            if (!choice) return;
+
+            if (choice.value === 'npm') {
+                // Run npm install in terminal
+                const task = new vscode.Task(
+                    { type: 'shell', task: 'install-ldf' },
+                    vscode.workspace.workspaceFolders?.[0] || vscode.TaskScope.Workspace,
+                    'Install LDF CLI',
+                    'npm',
+                    new vscode.ShellExecution('npm install -g @ldf/cli @nrrv/cli')
+                );
+                task.presentationOptions = {
+                    reveal: vscode.TaskRevealKind.Always,
+                    focus: true
+                };
+                await vscode.tasks.executeTask(task);
+            } else {
+                // Open the GitHub page
+                vscode.env.openExternal(vscode.Uri.parse('https://github.com/LLMdotInfo/ldf#installation'));
+            }
+        })
+    );
 }
 
 async function openSpecFile(
